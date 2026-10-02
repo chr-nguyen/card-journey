@@ -197,9 +197,24 @@
 #define S_DRAW_2_1 41
 #define S_DRAW_2_2 42
 #define S_DRAW_2_3 43
-#define SPR_TILE_COUNT 44
+#define S_EXPLORER_A_0 44
+#define S_EXPLORER_A_1 45
+#define S_EXPLORER_A_2 46
+#define S_EXPLORER_A_3 47
+#define S_EXPLORER_B_0 48
+#define S_EXPLORER_B_1 49
+#define S_EXPLORER_B_2 50
+#define S_EXPLORER_B_3 51
+#define S_ROUTE_FLAG 52
+#define SPR_TILE_COUNT 53
 
 extern const uint8_t bg_tiles[];
 extern const uint8_t spr_tiles[];
 extern const uint8_t font_chars[];
+#define TITLE_SCENE_COUNT 173
+extern const uint8_t title_scene_tiles[];
+extern const uint8_t title_scene_map[];
+#define MAP_SCENE_COUNT 193
+extern const uint8_t map_scene_tiles[];
+extern const uint8_t map_scene_map[];
 #endif

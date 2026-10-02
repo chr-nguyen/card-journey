@@ -6,8 +6,8 @@
 
 #define RF CARD(0,0,VERB_FIGHT)
 #define RT CARD(0,0,VERB_TAKE)
-#define RG CARD(0,1,VERB_GIVE)
-#define JF CARD(2,0,VERB_FIGHT)
+#define JG CARD(2,1,VERB_GIVE)
+#define JT CARD(2,0,VERB_TAKE)
 
 static Battle b;
 static void empty_battle(void)
@@ -31,7 +31,13 @@ static void test_definitions_and_initialization(void)
 {
     Battle copy;
     uint8_t i, invalid = CARD(1,0,1);
-    for (i = 0; i < 18; ++i) assert(card_valid(card_reward(i)));
+    for (i = 0; i < REWARD_COUNT; ++i) assert(card_valid(card_reward(i)));
+    for (i = 0; i < 3; ++i) {
+        assert(card_valid(CARD(COLOR_RUBY, i, VERB_FIGHT)));
+        assert(card_valid(CARD(COLOR_JADE, i, VERB_GIVE)));
+        assert(!card_valid(CARD(COLOR_RUBY, i, VERB_GIVE)));
+        assert(!card_valid(CARD(COLOR_JADE, i, VERB_FIGHT)));
+    }
     assert(!card_valid(CARD_NONE));
     assert(!card_valid(CARD(0,0,0)));
     assert(!card_valid(CARD(0,3,1)));
@@ -58,10 +64,10 @@ static void test_connections(void)
     assert(battle_preview(&b, 0, 0, &p) && p.amount == 1);
     slot(PLAYER, 0, RF, 2);
     assert(battle_preview(&b, 0, 1, &p) && p.amount == 2); /* Two neighbors, one boost. */
-    slot(PLAYER, 1, JF, 2);
+    slot(PLAYER, 1, JT, 2);
     assert(battle_preview(&b, 0, 1, &p) && p.replacing && p.amount == 2);
-    slot(PLAYER, 0, JF, 2);
-    slot(PLAYER, 2, JF, 2);
+    slot(PLAYER, 0, JT, 2);
+    slot(PLAYER, 2, JT, 2);
     slot(PLAYER, 1, RF, 2);
     assert(battle_preview(&b, 0, 1, &p) && p.amount == 1); /* Outgoing card cannot connect. */
 }
@@ -71,21 +77,21 @@ static void test_targets_replacement_and_limits(void)
     PlayPreview p;
     empty_battle();
     b.side[PLAYER].hand[0] = RF;
-    b.side[PLAYER].hand[1] = JF;
+    b.side[PLAYER].hand[1] = JT;
     b.side[PLAYER].hand_n = 2;
-    slot(PLAYER, 0, RG, 3);
+    slot(PLAYER, 0, JG, 3);
     slot(PLAYER, 1, RF, 2);
-    slot(ENEMY, 2, JF, 2);
+    slot(ENEMY, 2, JT, 2);
     assert(battle_preview(&b, 0, 0, &p) && p.targets == 4 && p.amount == 2);
     copy = b;
     assert(!battle_play(&b, 0, 0, 0));
     assert(!battle_play(&b, 0, 0, NO_TARGET));
     assert(!memcmp(&b, &copy, sizeof(b)));
     assert(battle_play(&b, 0, 0, 2));
-    assert(b.side[PLAYER].discard_n == 1 && b.side[PLAYER].discard[0] == RG);
+    assert(b.side[PLAYER].discard_n == 1 && b.side[PLAYER].discard[0] == JG);
     assert(b.side[ENEMY].board[2].card == CARD_NONE);
     assert(b.side[ENEMY].discard_n == 1);
-    assert(b.side[PLAYER].hand_n == 1 && b.side[PLAYER].hand[0] == JF);
+    assert(b.side[PLAYER].hand_n == 1 && b.side[PLAYER].hand[0] == JT);
     assert(b.plays == 1);
     assert(battle_play(&b, 0, 2, NO_TARGET));
     assert(b.plays == 0);
@@ -97,17 +103,17 @@ static void test_healing(void)
 {
     PlayPreview p;
     empty_battle();
-    b.side[PLAYER].hand[0] = RG;
+    b.side[PLAYER].hand[0] = JG;
     b.side[PLAYER].hand_n = 1;
-    slot(PLAYER, 0, RG, 3);
-    slot(PLAYER, 1, RG, 1);
+    slot(PLAYER, 0, JG, 3);
+    slot(PLAYER, 1, JG, 1);
     assert(battle_preview(&b, 0, 1, &p) && p.targets == 1);
     assert(!battle_play(&b, 0, 1, 1)); /* Cannot heal self/outgoing card. */
     assert(battle_play(&b, 0, 1, 0));
     assert(b.side[PLAYER].board[0].hp == 4);
     assert(b.side[PLAYER].board[1].hp == 4);
     empty_battle();
-    b.side[PLAYER].hand[0] = RG;
+    b.side[PLAYER].hand[0] = JG;
     b.side[PLAYER].hand_n = 1;
     assert(battle_preview(&b, 0, 0, &p) && p.targets == 0);
     assert(battle_play(&b, 0, 0, NO_TARGET));
@@ -116,20 +122,20 @@ static void test_draw_and_recycle(void)
 {
     empty_battle();
     b.side[PLAYER].discard[0] = RF;
-    b.side[PLAYER].discard[1] = JF;
+    b.side[PLAYER].discard[1] = JT;
     b.side[PLAYER].discard_n = 2;
-    slot(PLAYER, 0, RG, 3);
+    slot(PLAYER, 0, JG, 3);
     assert(battle_draw(&b, PLAYER, 5) == 2);
     assert(!b.side[PLAYER].deck_n && !b.side[PLAYER].discard_n);
-    assert(b.side[PLAYER].board[0].card == RG && b.side[PLAYER].board[0].hp == 3);
+    assert(b.side[PLAYER].board[0].card == JG && b.side[PLAYER].board[0].hp == 3);
     assert(battle_draw(&b, PLAYER, 1) == 0);
     empty_battle();
     b.side[PLAYER].hand[0] = RT;
     b.side[PLAYER].hand_n = 1;
     slot(PLAYER, 0, RF, 2);
-    slot(PLAYER, 1, RG, 4);
+    slot(PLAYER, 1, JG, 4);
     assert(battle_play(&b, 0, 1, NO_TARGET)); /* Replacement enters reshuffle. */
-    assert(b.side[PLAYER].hand_n == 1 && b.side[PLAYER].hand[0] == RG);
+    assert(b.side[PLAYER].hand_n == 1 && b.side[PLAYER].hand[0] == JG);
     assert(b.side[PLAYER].board[1].card == RT);
     empty_battle();
     b.side[PLAYER].hand_n = HAND_MAX;
@@ -143,7 +149,7 @@ static void test_draw_and_recycle(void)
     b.side[PLAYER].hand[2] = b.side[PLAYER].hand[3] = b.side[PLAYER].hand[4] = RF;
     b.side[PLAYER].hand_n = 5;
     b.side[PLAYER].deck[0] = b.side[PLAYER].deck[1] =
-        b.side[PLAYER].deck[2] = b.side[PLAYER].deck[3] = JF;
+        b.side[PLAYER].deck[2] = b.side[PLAYER].deck[3] = JT;
     b.side[PLAYER].deck_n = 4;
     slot(PLAYER, 0, RF, 2);
     assert(battle_play(&b, 0, 1, NO_TARGET));
@@ -151,14 +157,50 @@ static void test_draw_and_recycle(void)
     assert(battle_play(&b, 0, 2, NO_TARGET));
     assert(b.side[PLAYER].hand_n == 7 && b.plays == 0);
 }
+static void test_retention_and_cleanup(void)
+{
+    uint8_t i;
+    empty_battle();
+    b.side[PLAYER].hand[0] = RT;
+    b.side[PLAYER].hand[1] = RF;
+    b.side[PLAYER].hand_n = 2;
+    for (i = 0; i < 4; ++i) b.side[PLAYER].deck[i] = JT;
+    b.side[PLAYER].deck_n = 4;
+    b.side[ENEMY].hand[0] = JT;
+    b.side[ENEMY].hand_n = 1; /* Card kept on its prior turn. */
+    for (i = 0; i < 4; ++i) b.side[ENEMY].deck[i] = JG;
+    b.side[ENEMY].deck_n = 4;
+    battle_next_turn(&b, 1);
+    assert(b.active == ENEMY);
+    assert(b.side[PLAYER].hand_n == 1 && b.side[PLAYER].hand[0] == RF);
+    assert(b.side[PLAYER].discard_n == 1 && b.side[PLAYER].discard[0] == RT);
+    assert(b.side[ENEMY].hand_n == 5 && b.side[ENEMY].hand[0] == JT);
+    assert(b.side[ENEMY].deck_n == 0);
+    battle_next_turn(&b, NO_TARGET);
+    assert(b.active == PLAYER);
+    assert(b.side[PLAYER].hand_n == 5 && b.side[PLAYER].hand[0] == RF);
+    assert(b.side[PLAYER].deck_n == 0);
+    assert(b.side[ENEMY].hand_n == 0 && b.side[ENEMY].discard_n == 5);
+    empty_battle();
+    b.side[PLAYER].hand[0] = RF;
+    b.side[PLAYER].hand_n = 1;
+    battle_next_turn(&b, 99); /* An invalid keep index retains nothing. */
+    assert(b.side[PLAYER].hand_n == 0 && b.side[PLAYER].discard_n == 1);
+    empty_battle();
+    b.side[ENEMY].hand[0] = JG;
+    b.side[ENEMY].hand_n = 1;
+    battle_next_turn(&b, NO_TARGET);
+    assert(b.side[ENEMY].hand_n == 1); /* Empty piles cannot invent cards. */
+}
+
 static void test_ai_information_boundary(void)
 {
     Battle copy;
     BattleMove first, second;
     assert(battle_init(&b, starter_deck, 10, starter_deck, 10, 77));
     copy = b;
-    memset(copy.side[ENEMY].deck, RG, sizeof(copy.side[ENEMY].deck));
-    memset(copy.side[ENEMY].hand, RG, sizeof(copy.side[ENEMY].hand));
+    memset(copy.side[ENEMY].deck, JG, sizeof(copy.side[ENEMY].deck));
+    memset(copy.side[ENEMY].hand, JG, sizeof(copy.side[ENEMY].hand));
     assert(ai_choose(&b, &first));
     assert(ai_choose(&copy, &second));
     assert(!memcmp(&first, &second, sizeof(first)));
@@ -167,25 +209,25 @@ static void test_combat_and_cleanup(void)
 {
     empty_battle();
     slot(PLAYER, 0, CARD(0,2,1), 1);
-    slot(ENEMY, 0, JF, 2);
+    slot(ENEMY, 0, JT, 2);
     battle_attack_lane(&b, 0);
     assert(b.side[ENEMY].board[0].card == CARD_NONE);
     assert(b.side[ENEMY].hp == BATTLE_HP); /* No spillover. */
     assert(b.side[PLAYER].board[0].hp == 1); /* No retaliation. */
     b.side[PLAYER].hand[0] = RF;
     b.side[PLAYER].hand_n = 1;
-    b.side[ENEMY].deck[0] = JF;
+    b.side[ENEMY].deck[0] = JT;
     b.side[ENEMY].deck_n = 1;
-    battle_next_turn(&b);
+    battle_next_turn(&b, NO_TARGET);
     assert(b.active == ENEMY && b.plays == 2);
     assert(b.side[PLAYER].hand_n == 0 && b.side[PLAYER].discard_n == 1);
     assert(b.side[ENEMY].hand_n == 2); /* Draw pile plus the defeated card recycle. */
     empty_battle();
     slot(PLAYER, 0, RF, 2);
     slot(PLAYER, 1, RF, 2);
-    slot(ENEMY, 1, RG, 4);
+    slot(ENEMY, 1, JG, 4);
     b.side[ENEMY].hp = 1;
-    battle_end_turn(&b);
+    battle_end_turn(&b, ai_keep(&b));
     assert(b.winner == PLAYER && b.side[ENEMY].hp == 0);
     assert(b.side[ENEMY].board[1].hp == 4); /* Lethal stops later attacks. */
     assert(b.active == PLAYER);
@@ -224,7 +266,7 @@ static void test_seeded_battles(void)
                 assert(battle_play(&b, move.hand, move.lane, move.target));
                 check_zones(starter_deck, enemy);
             }
-            battle_end_turn(&b);
+            battle_end_turn(&b, ai_keep(&b));
             check_zones(starter_deck, enemy);
         }
         turns += b.turn;
@@ -248,7 +290,7 @@ static void compare_openings(void)
             while (b.winner == NO_WINNER && b.turn <= 120) {
                 while (b.plays && ai_choose(&b, &move))
                     assert(battle_play(&b, move.hand, move.lane, move.target));
-                battle_end_turn(&b);
+                battle_end_turn(&b, ai_keep(&b));
             }
             assert(b.winner != NO_WINNER);
             if (b.winner == PLAYER) ++wins;
@@ -266,6 +308,7 @@ int main(void)
     test_healing();
     test_draw_and_recycle();
     test_combat_and_cleanup();
+    test_retention_and_cleanup();
     test_ai_information_boundary();
     test_seeded_battles();
     compare_openings();

@@ -3,6 +3,7 @@
 /* Scratch space is static to keep the Game Boy stack small. Evaluation uses
    only boards/health and the active side's hand count, never hidden enemy cards. */
 static Battle trial;
+static uint8_t keep_value(const Battle *b, uint8_t hand);
 static int16_t evaluate(const Battle *b)
 {
     const BattleSide *s = &b->side[b->active], *enemy = &b->side[1 - b->active];
@@ -27,8 +28,43 @@ static int16_t evaluate(const Battle *b)
     if (damage >= enemy->hp) score += 1000;
     if (threat >= s->hp) score -= 500;
     if (b->plays) score += s->hand_n; /* Draws matter while a play remains. */
+    else if (s->hand_n && ai_keep(b) != NO_TARGET)
+        score += keep_value(b, ai_keep(b));
     return score;
 }
+/* A kept card trades one fresh draw for a known option next turn. Assess
+   public board context without inspecting the opponent's hidden hand. */
+static uint8_t keep_value(const Battle *b, uint8_t hand)
+{
+    const BattleSide *s = &b->side[b->active];
+    const BattleSide *enemy = &b->side[1 - b->active];
+    uint8_t card = s->hand[hand], lane, value;
+    value = card_attack(card) + card_health(card);
+    for (lane = 0; lane < LANES; ++lane) {
+        if (s->board[lane].card != CARD_NONE &&
+            C_COLOR(s->board[lane].card) == C_COLOR(card)) value += 2;
+        if (C_VERB(card) == VERB_FIGHT && enemy->board[lane].card != CARD_NONE)
+            value += 2;
+        if (C_VERB(card) == VERB_GIVE && s->board[lane].card != CARD_NONE &&
+            s->board[lane].hp < card_health(s->board[lane].card)) value += 2;
+    }
+    if (C_VERB(card) == VERB_TAKE && b->plays) ++value;
+    return value;
+}
+uint8_t ai_keep(const Battle *b)
+{
+    const BattleSide *s = &b->side[b->active];
+    uint8_t hand, best = NO_TARGET, value, best_value = 5;
+    for (hand = 0; hand < s->hand_n; ++hand) {
+        value = keep_value(b, hand);
+        if (value > best_value) {
+            best_value = value;
+            best = hand;
+        }
+    }
+    return best;
+}
+
 uint8_t ai_choose(const Battle *b, BattleMove *move)
 {
     uint8_t hand, lane, target, found = 0;

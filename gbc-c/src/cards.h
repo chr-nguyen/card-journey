@@ -14,6 +14,7 @@
 #define VERB_GIVE 5
 #define DECK_MAX 20
 #define STARTER_SIZE 10
+#define REWARD_COUNT 12
 
 extern const uint8_t starter_deck[STARTER_SIZE];
 extern const uint8_t opponent_decks[3][STARTER_SIZE];

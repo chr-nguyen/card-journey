@@ -5,6 +5,7 @@
 #include <gb/hardware.h>
 #include <rand.h>
 #include <stdint.h>
+#include <string.h>
 #include "assets.h"
 #include "cards.h"
 #include "battle.h"
@@ -22,7 +23,7 @@
 /* ------------------------------------------------------------------ */
 
 static const char * const station_names[N_STATIONS] = {
-    "TRAILHEAD", "MOSS HOLLOW", "SUMMIT GATE",
+    "BASE CAMP", "ICE CHASM", "ELDER GATE",
 };
 static const char * const color_names[4] = {
     "RUBY", "AMBER", "JADE", "AZURE",
@@ -63,46 +64,37 @@ static const palette_color_t pals_table[32] = {
     RGB( 3, 7, 9), RGB(25,22,12), RGB(10,16,17), RGB(31,30,19),
 };
 
-/* the map set: sea mist, salt-worn ruins, and ruby trail markers */
+/* Antarctic night, blue ice, and pale green light in the elder masonry. */
 #define P_SCENE 1
-#define P_FLAGR 2               /* flag on rock  */
-#define P_TREE  3
 #define P_RED   4
-#define P_FLAGS 7               /* flag on snow  */
 static const palette_color_t pals_map[32] = {
     RGB( 3, 4, 7), RGB( 9,10,14), RGB(16,17,20), RGB(28,27,22),
-    RGB( 3, 9,13), RGB(17,23,22), RGB( 8,15,17), RGB( 2, 6, 9),
-    RGB( 8,15,17), RGB(28, 8,10), RGB(25,24,18), RGB( 2, 6, 9),
-    RGB( 8,15,17), RGB(11,23,19), RGB( 4,12,14), RGB( 2, 6, 9),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
     RGB( 3, 4, 7), RGB(28, 8,10), RGB(15, 4, 8), RGB(29,23,18),
-    RGB( 3, 9,13), RGB(22,30,22), RGB(12,21,20), RGB( 2, 6, 9),
-    RGB( 3, 9,13), RGB(28,27,21), RGB( 8,15,17), RGB(28,27,21),
-    RGB(17,23,22), RGB(28, 8,10), RGB(25,24,18), RGB( 2, 6, 9),
+    RGB( 2, 4, 9), RGB(24,29,22), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 3, 4, 7), RGB(28,27,21), RGB( 8,15,17), RGB(28,27,21),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
 };
 
-/* the title set: night sky bands, moonlit silhouette */
 #define TP_SKY0 0
-#define TP_SKY1 1
-#define TP_SKY2 2
-#define TP_SKY3 3
-#define TP_MTN  4
-#define TP_MOON 5
-#define TP_GND  6
+#define TP_GND  0
 #define TP_GOLD 7
 static const palette_color_t pals_title[32] = {
-    RGB( 2, 5,10), RGB( 5,10,14), RGB( 3, 7,11), RGB(27,29,23),
-    RGB( 3, 8,12), RGB( 7,13,16), RGB( 4,10,13), RGB(27,29,23),
-    RGB( 4,11,15), RGB( 8,16,18), RGB( 6,12,16), RGB(27,29,23),
-    RGB( 6,14,17), RGB(10,19,20), RGB( 7,15,18), RGB(27,29,23),
-    RGB( 6,14,17), RGB(23,31,22), RGB(12,22,21), RGB( 2, 6, 9),
-    RGB( 2, 5,10), RGB(25,29,21), RGB( 3, 7,11), RGB(25,29,21),
-    RGB( 2, 7,10), RGB( 7,16,17), RGB( 4,11,14), RGB(27,29,23),
-    RGB( 4,11,15), RGB( 8,16,18), RGB( 6,12,16), RGB(27,29,19),
+    RGB( 2, 4, 9), RGB( 7,11,16), RGB(12,18,21), RGB(27,29,23),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(24,29,22), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(12,19,19), RGB( 7,12,16), RGB(24,29,22),
 };
 
 static const palette_color_t pals_spr[16] = {
     0, RGB(31,29,19), RGB(31,23, 8), RGB(17,10, 5), /* gold cursor */
-    0, RGB(30,22,16), RGB(28, 4, 6), RGB_BLACK,      /* climber      */
+    0, RGB(30,28,22), RGB(23, 8, 7), RGB( 2, 2, 5), /* explorer     */
     0, RGB(25,31,24), RGB( 9,24,14), RGB( 3,11,10), /* healing      */
     0, RGB(31,29,22), RGB(31,12, 8), RGB(16, 4, 7), /* sword impact */
 };
@@ -115,12 +107,56 @@ static const palette_color_t *pal_cur;
 /*  Low-level video helpers                                            */
 /* ------------------------------------------------------------------ */
 
+/* Compose a complete duel in RAM. Intermediate clears never reach VRAM.
+ * Direct drawing also maintains the cache, including effects and inspection. */
+static uint8_t video_tiles[360], video_attrs[360];
+static uint8_t next_tiles[360], next_attrs[360];
+static uint8_t video_buffered;
+
 static void put(uint8_t x, uint8_t y, uint8_t t, uint8_t pal)
 {
+    uint16_t at = (uint16_t)y * 20 + x;
+    if (video_buffered) {
+        next_tiles[at] = t;
+        next_attrs[at] = pal;
+        return;
+    }
+    video_tiles[at] = t;
+    video_attrs[at] = pal;
     set_bkg_tile_xy(x, y, t);
     VBK_REG = 1;
     set_bkg_tile_xy(x, y, pal);
     VBK_REG = 0;
+}
+
+static void video_present(void)
+{
+    uint8_t x, y, start, end, i;
+    uint16_t row;
+    video_buffered = 0;
+    for (y = 0; y < 18; ++y) {
+        row = (uint16_t)y * 20;
+        start = 20;
+        end = 0;
+        for (x = 0; x < 20; ++x) {
+            if (next_tiles[row+x] != video_tiles[row+x] ||
+                next_attrs[row+x] != video_attrs[row+x]) {
+                if (start == 20) start = x;
+                end = x + 1;
+            }
+        }
+        if (start == 20) continue;
+        /* A maximum of twenty tile IDs and attributes per VBlank. */
+        if (LCDC_REG & LCDCF_ON) wait_vbl_done();
+        VBK_REG = 1;
+        set_bkg_tiles(start, y, end-start, 1, next_attrs + row + start);
+        VBK_REG = 0;
+        set_bkg_tiles(start, y, end-start, 1, next_tiles + row + start);
+        for (i = start; i < end; ++i) {
+            video_tiles[row+i] = next_tiles[row+i];
+            video_attrs[row+i] = next_attrs[row+i];
+        }
+    }
 }
 
 static void frect(uint8_t x, uint8_t y, uint8_t w, uint8_t h,
@@ -318,7 +354,7 @@ static uint8_t rnd(uint8_t n)
 
 static uint8_t random_card(void)
 {
-    return card_reward(rnd(18));
+    return card_reward(rnd(REWARD_COUNT));
 }
 
 
@@ -434,49 +470,38 @@ static uint8_t big_text(const char *s, uint8_t x, uint8_t y,
 /*  Title screen                                                       */
 /* ------------------------------------------------------------------ */
 
-static uint8_t sky_pal(uint8_t y)
+/* Scene tiles live in CGB bank 1; card/font/sprite patterns stay in bank 0. */
+static void load_scene(const uint8_t *tiles, uint8_t count,
+                       const uint8_t *map, uint8_t y, uint8_t rows)
 {
-    if (y < 4) return TP_SKY0;
-    if (y < 7) return TP_SKY1;
-    if (y < 9) return TP_SKY2;
-    return TP_SKY3;
+    uint8_t x, row;
+    VBK_REG = 1;
+    set_bkg_data(0, count, tiles);
+    VBK_REG = 0;
+    for (row = y; row < y + rows; ++row)
+        for (x = 0; x < 20; ++x)
+            put(x, row, *map++, 0x08 | P_SCENE);
+}
+
+static void explorer(uint8_t x, uint8_t y, uint8_t frame)
+{
+    uint8_t i;
+    for (i = 0; i < 4; ++i) {
+        set_sprite_tile(1+i, (frame ? S_EXPLORER_B_0 : S_EXPLORER_A_0)+i);
+        set_sprite_prop(1+i, 1);
+        move_sprite(1+i, x+(i&1)*8, y+(i/2)*8);
+    }
+    SHOW_SPRITES;
 }
 
 static void draw_night_scene(void)
 {
-    uint8_t x, y, dyn;
-
-    /* banded night sky */
-    for (y = 0; y < 16; y++)
-        for (x = 0; x < 20; x++)
-            put(x, y, T_BLANK, sky_pal(y));
-    /* ground band */
-    frect(0, 16, 20, 2, T_DITH12, TP_GND);
-
-    /* stars and moon */
-    put(2, 1, T_STAR1, TP_SKY0);  put(16, 0, T_STAR2, TP_SKY0);
-    put(6, 2, T_STAR2, TP_SKY0);  put(12, 1, T_STAR2, TP_SKY0);
-    put(1, 5, T_STAR2, TP_SKY1);  put(18, 4, T_STAR1, TP_SKY1);
-    put(4, 8, T_STAR1, TP_SKY2);  put(15, 7, T_STAR2, TP_SKY2);
-    put(17, 2, T_MOON, TP_MOON);
-
-    /* An impossible eye suspended above tidal ruins, away from the logo. */
-    for (y = 0; y < 4; ++y)
-        for (x = 0; x < 6; ++x)
-            put(7 + x, 11 + y, T_RUIN_0 + y * 6 + x, TP_MTN);
-    frect(0, 15, 20, 1, T_WAVE, TP_MTN);
-    for (x = 1; x < 20; x += 3) {
-        if (x > 4 && x < 16) continue;
-        put(x, 14, T_KELP_0, TP_MTN);
-        put(x, 15, T_KELP_1, TP_MTN);
-    }
-    put(5, 14, T_MENHIR, TP_MTN);
-    put(14, 14, T_MENHIR, TP_MTN);
-
-    /* the big logo (band palettes keep the sky gradient behind it) */
-    dyn = big_text("CARD", 6, 2, sky_pal(2), DYN_BASE);
-    big_text("JOURNEY", 3, 5, sky_pal(5), dyn);
-    print_center(8, "THREE LANE BATTLES", TP_GOLD);
+    uint8_t dyn;
+    load_scene(title_scene_tiles, TITLE_SCENE_COUNT, title_scene_map, 0, 18);
+    dyn = big_text("CARD", 6, 1, TP_GOLD, DYN_BASE);
+    big_text("JOURNEY", 3, 3, TP_GOLD, dyn);
+    print_center(5, "BEYOND THE ICE", TP_SKY0);
+    explorer(28, 116, 0);
 }
 
 static void title_screen(void)
@@ -494,13 +519,8 @@ static void title_screen(void)
         seed++;
         t++;
         if (n & J_START) break;
-        /* twinkle: blink PRESS START, swap a star */
-        if ((t & 31) == 0)
-            print_center(16, "PRESS START", TP_GND);
-        else if ((t & 31) == 16)
-            frect(4, 16, 12, 1, T_DITH12, TP_GND);
-        if ((t & 63) == 0)  put(2, 1, T_STAR2, TP_SKY0);
-        if ((t & 63) == 32) put(2, 1, T_STAR1, TP_SKY0);
+        /* Keep the call to action readable while the explorer's scarf moves. */
+        explorer(28, 116, (t >> 5) & 1);
     }
     initrand(seed + DIV_REG);
     sfx_pick();
@@ -532,15 +552,15 @@ static void help_screens(void)
 {
     static const char * const p1[8] = {
         "PLAY UP TO 2 CARDS.", "FIRST TURN: 1 PLAY.",
-        "START ENDS THE TURN.", "CARDS ATTACK AHEAD.",
+        "START: END OR KEEP.", "CARDS ATTACK AHEAD.",
         "EMPTY LANE: HIT FOE.", "SHAPE SETS ATK / HP.",
         "CIR 2/2 SQR 1/4", "TRIANGLE 3/1",
     };
     static const char * const p2[8] = {
-        "SAME COLOR NEIGHBOR", "BOOSTS ENTRY VERBS.",
+        "RUBY: FIGHT + TAKE", "JADE: GIVE + TAKE",
+        "MATCH ADJACENT COLOR", "BOOSTS ENTRY VERBS.",
         "FIGHT: HIT A CARD.", "GIVE: HEAL AN ALLY.",
-        "TAKE: DRAW CARDS.", "CARDS RECYCLE.",
-        "WIN: GAIN A CARD.", "3 LIVES FOR THE RUN.",
+        "TAKE: DRAW CARDS.", "WIN: REPLACE A CARD.",
     };
     help_page(p1, 8, "THREE LANE DUELS");
     help_page(p2, 8, "COLOR CONNECTIONS");
@@ -551,10 +571,10 @@ static void help_screens(void)
 /* ------------------------------------------------------------------ */
 
 static const uint8_t flag_x[N_STATIONS + 1] = {
-    4, 7, 13, 10
+    4, 8, 14, 11
 };
 static const uint8_t flag_y[N_STATIONS + 1] = {
-    13, 10, 7, 3
+    13, 10, 7, 4
 };
 
 static void draw_hud(void)
@@ -574,48 +594,13 @@ static void draw_hud(void)
 
 static void draw_map_scene(void)
 {
-    uint8_t x, y, i;
-
-    /* Moonlit ascent: apex (10,3), frost to row 6. */
-    frect(0, 1, 20, 14, T_BLANK, P_SCENE);
-    for (y = 3; y < 15; y++) {
-        uint8_t hw = y - 3;
-        uint8_t on_l = (10 >= hw + 1);
-        uint8_t on_r = (10 + hw + 1 <= 19);
-        uint8_t lx = on_l ? 10 - hw - 1 : 0;
-        uint8_t rx = on_r ? 10 + hw + 1 : 19;
-        uint8_t snow = (y <= 6);
-        if (on_l) put(lx, y, snow ? T_SNOW_L : T_ROCK_L, P_SCENE);
-        if (on_r) put(rx, y, snow ? T_SNOW_R : T_ROCK_R, P_SCENE);
-        for (x = lx + on_l; x <= rx - on_r; x++)
-            put(x, y, (y == 7) ? T_SNOWCAP : (snow ? T_SNOW : T_ROCK),
-                P_SCENE);
-    }
-    /* foothill pines */
-    put(1, 13, T_TREE_TOP, P_TREE); put(1, 14, T_TREE_BOT, P_TREE);
-    put(18, 12, T_TREE_TOP, P_TREE); put(18, 13, T_TREE_BOT, P_TREE);
-    put(3, 12, T_MENHIR, P_FLAGR);
-    put(16, 13, T_MENHIR, P_FLAGR);
-    put(0, 10, T_WAVE, 5); put(1, 11, T_WAVE, 5);
-    put(19, 10, T_WAVE, 5);
-    put(2, 3, T_MOON, 6);
-    put(5, 2, T_STAR1, 6);
-    put(17, 5, T_STAR2, 6);
-    for (y = 0; y < 4; ++y)
-        for (x = 0; x < 6; ++x)
-            put(7 + x, 1 + y, T_RUIN_0 + y * 6 + x, 5);
-
-    /* path dots + station flags */
-    for (i = 0; i < N_STATIONS; i++) {
-        uint8_t mx = (uint8_t)(flag_x[i] + flag_x[i + 1]) >> 1;
-        uint8_t my = (uint8_t)(flag_y[i] + flag_y[i + 1]) >> 1;
-        uint8_t p = (my <= 6) ? P_FLAGS : P_FLAGR;
-        put(mx, my, T_PATHDOT, p);
-    }
-    for (i = 0; i <= N_STATIONS; i++) {
-        uint8_t p = (flag_y[i] <= 6) ? P_FLAGS : P_FLAGR;
-        uint8_t done = (i < station);
-        put(flag_x[i], flag_y[i], done ? T_FLAG_DONE : T_FLAG, p);
+    uint8_t i;
+    load_scene(map_scene_tiles, MAP_SCENE_COUNT, map_scene_map, 1, 14);
+    /* Transparent flags preserve the ice and trail beneath each landmark. */
+    for (i = 0; i <= N_STATIONS; ++i) {
+        set_sprite_tile(5+i, S_ROUTE_FLAG);
+        set_sprite_prop(5+i, i < station ? 2 : 3);
+        move_sprite(5+i, flag_x[i]*8+8, flag_y[i]*8+16);
     }
 }
 
@@ -638,24 +623,22 @@ static void draw_map_controls(void)
 static uint8_t map_screen(void)
 {
     uint8_t t = 0, n;
-    uint8_t px = flag_x[station] * 8 + 8;
-    uint8_t py = flag_y[station] * 8 + 14;
-    if (station == 0) { px = 2 * 8 + 8; py = 14 * 8 + 14; }
+    uint8_t px = flag_x[station] * 8 - 4;
+    uint8_t py = flag_y[station] * 8 + 8;
+    if (station == 0) { px = 24; py = 112; }
 
     DISPLAY_OFF;
     draw_hud();
     draw_map_scene();
     draw_map_footer();
-    set_sprite_tile(1, S_CLIMBER_A);
-    set_sprite_prop(1, 1);
-    move_sprite(1, px, py);
+    explorer(px, py, 0);
     SHOW_SPRITES;
     screen_open(pals_map);
 
     for (;;) {
         n = tick();
         t++;
-        set_sprite_tile(1, (t & 16) ? S_CLIMBER_B : S_CLIMBER_A);
+        explorer(px, py, (t >> 5) & 1);
         if (t == 120) {
             draw_map_controls();
         } else if (t == 240) {
@@ -729,8 +712,8 @@ static void reward_screen(void)
 {
     uint8_t choices[3], chosen, cur = 0, i, n;
 
-    choices[0] = CARD(strongest_color(), rnd(3), C_VERB(random_card()));
-    do { choices[1] = random_card(); } while (choices[1] == choices[0]);
+    choices[0] = card_reward((strongest_color() == COLOR_JADE ? 6 : 0) + rnd(6));
+    choices[1] = card_reward((strongest_color() == COLOR_JADE ? 0 : 6) + rnd(6));
     do { choices[2] = random_card(); }
         while (choices[2] == choices[0] || choices[2] == choices[1]);
 
@@ -738,7 +721,7 @@ static void reward_screen(void)
     felt();
     frect(0, 0, 20, 3, T_BLANK, P_UI);
     print_center(0, "STATION CLEAR!", P_GOLD);
-    print_center(2, "CHOOSE A NEW CARD", P_UI);
+    print_center(2, "CHOOSE A REPLACEMENT", P_UI);
     for (i = 0; i < 3; i++) draw_card(reward_x[i] + 1, 6, choices[i]);
     print_card_name(12, choices[0], P_FELT);
     print_center(14, verb_names[C_VERB(choices[0])], P_FELT);
@@ -770,7 +753,6 @@ static void reward_screen(void)
     chosen = choices[cur];
     sfx_pick();
     screen_close();
-    if (coll_n < MAXC) { coll[coll_n++] = chosen; return; }
 
     cur = 0;
     DISPLAY_OFF;
@@ -815,13 +797,13 @@ static void reward_screen(void)
 /*  Endings                                                            */
 /* ------------------------------------------------------------------ */
 
-/* wipe the logo/subtitle area back to banded sky */
+/* Wipe the title lettering while preserving the Antarctic panorama. */
 static void clear_sky(void)
 {
     uint8_t x, y;
-    for (y = 2; y < 9; y++)
+    for (y = 0; y < 7; y++)
         for (x = 0; x < 20; x++)
-            put(x, y, T_BLANK, sky_pal(y));
+            put(x, y, T_BLANK, TP_SKY0);
 }
 
 static void gameover_screen(void)
@@ -829,8 +811,8 @@ static void gameover_screen(void)
     DISPLAY_OFF;
     draw_night_scene();
     clear_sky();
-    big_text("YOU FALL", 2, 4, TP_SKY1, DYN_BASE);
-    print_center(8, "THE MOUNTAIN WINS", TP_GOLD);
+    big_text("YOU FALL", 2, 2, TP_SKY0, DYN_BASE);
+    print_center(5, "THE MOUNTAIN WINS", TP_GOLD);
     print(2, 16, "YOU REACHED STN", TP_GND);
     print_u16(18, 16, station + 1, TP_GND);
     print_center(17, "PRESS START", TP_GND);
@@ -847,8 +829,8 @@ static void summit_screen(void)
     DISPLAY_OFF;
     draw_night_scene();
     clear_sky();
-    big_text("THE SUMMIT", 0, 4, TP_SKY1, DYN_BASE);
-    print_center(8, "A TRUE CARD SAGE!", TP_GOLD);
+    big_text("THE SUMMIT", 0, 2, TP_SKY0, DYN_BASE);
+    print_center(5, "A TRUE CARD SAGE!", TP_GOLD);
     print_center(16, "THREE DUELS CLEARED", TP_GND);
     print_center(17, "PRESS START", TP_GND);
     screen_open(pals_title);
@@ -858,9 +840,9 @@ static void summit_screen(void)
         t++;
         if (n & J_START) break;
         if ((t & 63) == 0)  { put(2, 1, T_STAR2, TP_SKY0);
-                              put(18, 4, T_STAR2, TP_SKY1); }
+                              put(18, 4, T_STAR2, TP_SKY0); }
         if ((t & 63) == 32) { put(2, 1, T_STAR1, TP_SKY0);
-                              put(18, 4, T_STAR1, TP_SKY1); }
+                              put(18, 4, T_STAR1, TP_SKY0); }
     }
     sfx_pick();
     screen_close();

@@ -54,6 +54,8 @@ def main():
     rules = ct.CDLL(args.rules)
     rules.ai_choose.argtypes = [ct.POINTER(Battle), ct.POINTER(Move)]
     rules.ai_choose.restype = ct.c_uint8
+    rules.ai_keep.argtypes = [ct.POINTER(Battle)]
+    rules.ai_keep.restype = ct.c_uint8
     rules.card_valid.argtypes = [ct.c_uint8]
     rules.card_valid.restype = ct.c_uint8
     rules.battle_play.argtypes = [ct.POINTER(Battle), ct.c_uint8, ct.c_uint8, ct.c_uint8]
@@ -145,9 +147,27 @@ def main():
     screenshot("battle")
     assert_frame(0, 11)
     assert_ownership()
-    press("right")
+    def stable_navigation(key):
+        # Capture EVERY displayed frame, not only the settled result. Moving a
+        # hand selection must never clear the board or blank the LCD. Card
+        # interiors exclude the two-pixel sprite outline that intentionally moves.
+        board = gb.screen.ndarray[:88].copy()
+        interiors = [gb.screen.ndarray[90:118, col * 32 + 2:col * 32 + 22].copy()
+                     for col in range(5)]
+        gb.button_press(key)
+        for frame in range(46):
+            if frame == 6:
+                gb.button_release(key)
+            tick(1)
+            assert gb.memory[0xFF40] & 0x80, "LCD blanked during selection movement"
+            assert (gb.screen.ndarray[:88] == board).all(), ("Board flicker", key, frame)
+            for col, interior in enumerate(interiors):
+                assert (gb.screen.ndarray[90:118, col * 32 + 2:col * 32 + 22] == interior).all(), (
+                    "Hand card flicker", key, frame, col)
+
+    stable_navigation("right")
     assert_frame(4, 11)
-    press("left")
+    stable_navigation("left")
     assert_frame(0, 11)
     initial = bytes(gb.memory[addr("duel_state"):addr("duel_state") + 121])
     press("a")  # Hand -> placement, cancel without consuming anything.
@@ -170,6 +190,16 @@ def main():
     assert read("duel_phase") == 3
     press("b")
     assert bytes(gb.memory[addr("duel_state"):addr("duel_state") + 121]) == initial
+    press("start")
+    press("a")
+    assert read("duel_phase") == 4
+    screenshot("keep")
+    assert_frame(0, 11)
+    press("right")
+    assert_frame(4, 11)
+    press("b")
+    assert read("duel_phase") == 0
+    assert bytes(gb.memory[addr("duel_state"):addr("duel_state") + 121]) == initial
 
     victories = defeats = actions = max_hand = 0
     saved_target = False
@@ -188,6 +218,7 @@ def main():
                     screenshot("summit")
                     break
                 old_count = read("coll_n")
+                old_deck = bytes(gb.memory[addr("coll"):addr("coll") + old_count])
                 tick(30)
                 screenshot("reward")
                 assert_frame(3, 6)
@@ -205,7 +236,16 @@ def main():
                                 press("right")
                             break
                 press("b" if skip else "a", 100)
-                assert read("coll_n") == old_count + (0 if skip else 1)
+                if not skip:
+                    screenshot("replace")
+                    assert_frame(14, 6)
+                    press("right")
+                    assert_frame(14, 6)
+                    press("left")
+                    press("a", 100)
+                assert read("coll_n") == old_count == 10
+                new_deck = bytes(gb.memory[addr("coll"):addr("coll") + old_count])
+                assert new_deck == old_deck if skip else new_deck[1:] == old_deck[1:]
             else:
                 defeats += 1
                 assert read("hearts") == old_lives - 1, (old_lives, read("hearts"))
@@ -258,7 +298,32 @@ def main():
         if args.lose_run or not value.plays or not chosen:
             press("start")
             if read("duel_phase") == 3:
-                press("a", 150)
+                press("a")
+            if read("duel_phase") == 4:
+                state = battle()
+                kept = 255 if args.lose_run else rules.ai_keep(ct.byref(state))
+                kept_card = state.side[0].hand[kept] if kept != 255 else None
+                if kept == 255:
+                    press("start", 40)
+                else:
+                    while read("duel_hand") != kept:
+                        press("right" if read("duel_hand") < kept else "left")
+                    press("a", 40)
+                # Wait for the player's attack to finish, then check the hand
+                # before the opponent can finish its own turn or play our card.
+                for _ in range(180):
+                    after = battle()
+                    if after.active == 1 or after.winner != 255:
+                        break
+                    tick(1)
+                else:
+                    raise AssertionError(("Player attack did not end", after.active,
+                                          after.turn, read("duel_phase"), kept))
+                if after.winner == 255:
+                    assert after.side[0].hand_n == (1 if kept_card is not None else 0)
+                    if kept_card is not None:
+                        assert after.side[0].hand[0] == kept_card
+                tick(150)
             else:
                 tick(150)
             actions += 1

@@ -1,6 +1,9 @@
 # Card Journey: three-lane battler implementation plan
 
-Status: milestones 1-3 implemented as a playable prototype. Numerical values
+Status: milestones 1-3 implemented as a playable prototype. The rules below
+record the initial implementation; the current retention, color, and reward
+rules are in [the GBC README](gbc-c/README.md), with rationale in
+[the mechanics research](gbc-c/MECHANICS_RESEARCH.md). Numerical values
 remain starting points for human playtesting; the full mountain and camps are pending.
 
 ## Goal

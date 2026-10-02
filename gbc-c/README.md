@@ -6,14 +6,18 @@ connect matching colors, and battle through three lanes.
 
 ## Cards
 
-Each card has a **color**, **shape**, and **verb**. The prototype uses Ruby and
-Jade. Shape determines combat stats:
+Each card has a **color**, **shape**, and **verb**. Shape determines combat
+stats; both colors can use every shape:
 
 | Shape | Attack | Health |
 | --- | --- | --- |
 | Circle | 2 | 2 |
 | Square | 1 | 4 |
 | Triangle | 3 | 1 |
+
+Ruby cards have **FIGHT** or **TAKE**. Jade cards have **GIVE** or **TAKE**.
+Ruby specializes in removing enemies; Jade can heal damaged friendly cards.
+Both colors' cards still attack normally through their lanes.
 
 A verb activates once when you play the card. If a friendly card immediately
 beside its destination shares its color, the verb is stronger. Two matching
@@ -35,12 +39,17 @@ Both sides start at 12 health. Enemy cards occupy the top three slots; your
 cards occupy the middle three slots, with your hand below. The numbers under
 each board card are **attack / current health**. Inspection explains each card.
 
-1. Draw five cards at the beginning of your turn.
+1. Start with five cards. On later turns, draw up to five total: five fresh
+   cards, or one card saved from your last turn plus four draws. If the deck and
+   discard pile cannot supply them, draw as many as possible.
 2. Play up to two cards. The player starts first and gets **one play on the
-   opening turn**. Choose a card, choose its lane, then choose any ability target.
-3. Press START to end your turn. Your cards attack their opposing lanes from
-   left to right. An empty enemy lane lets damage reach the opponent.
-4. Discard unused hand cards. The opponent takes its turn using the same rules.
+   opening turn**. Choose a card, its lane, and any ability target.
+3. Press START to end your turn. If plays remain, confirm that you want to stop.
+   Then choose one unused card to **keep for your next turn**, or choose none.
+   All other unused cards go to your discard pile. Keeping costs no play.
+4. Your cards attack their opposing lanes from left to right. An empty enemy
+   lane lets damage reach the opponent. The opponent takes its turn using the
+   same play, keep, and drawing rules.
 
 Cards stay on the board, and damage persists. Newly deployed cards attack that
 turn; defenders attack on their own turn and do not retaliate. Excess damage
@@ -53,7 +62,8 @@ the draw pile runs out, reshuffle the discard pile. Cards in hand or on the boar
 remain outside that shuffle. TAKE can grow your hand to seven cards; the visible
 five-card window scrolls as you select cards.
 
-The cosmic-coastal GBC setting uses sea mist, impossible ruins, and strange eyes.
+The Antarctic GBC setting uses fractured ice, enormous elder ruins, and a hooded
+expedition explorer. Title and map scenery draw on Mountains of Madness imagery.
 The original hooded-spirit, armored-sentinel, and gargoyle card portraits remain;
 shape seals are at the top and verb badges at the bottom. The enemy board has a
 violet ENEMY band and downward markers; yours has a sea-green YOUR band and upward
@@ -65,10 +75,12 @@ HUD's action pips show remaining plays. See [the art direction and asset notes](
 
 ## Building your deck
 
-Begin with ten cards. After each of the first two wins, choose one of three
-cards to add to your deck, or skip. Rewards include a card matching your most
-common color. The deck supports twenty cards; at capacity a reward requires
-replacing a card or skipping.
+Begin with ten cards and keep a **ten-card expedition deck** throughout the
+run. After each of the first two wins, choose one of three offered cards, then
+choose one card in your deck to replace; or skip the reward. Each offer has a
+card in your most common color, a card in the other color, and a third distinct
+option. A replacement changes future battles without diluting your draws.
+The keep choice during battle affects only that duel, not the expedition deck.
 
 The three opponents favor attacks, durable support, and color connections.
 Battle health resets for every duel. The three hearts on the mountain map are
@@ -84,13 +96,16 @@ reach the summit; lose all three lives to end the run.
 | Hand | LEFT/RIGHT select, A choose, START end turn, SELECT inspect |
 | Placement | LEFT/RIGHT lane, A confirm / choose target, B cancel |
 | Ability target | LEFT/RIGHT target, A commit, B return to placement |
-| End-turn prompt | A confirm, B cancel |
+| End-turn prompt | A continue to the keep choice, B cancel |
+| Keep choice | LEFT/RIGHT select a hand card; A keep it and attack, START keep none and attack, B cancel |
 | Inspection | UP/DOWN hand / friendly board / enemy board; LEFT/RIGHT card; B or SELECT back |
-| Reward | LEFT/RIGHT offer, A acquire, B skip |
+| Reward | LEFT/RIGHT offer, A choose, B skip; then LEFT/RIGHT deck card, A replace, B keep old deck |
 | Deck | LEFT/RIGHT card, B or START back |
 
 Choosing a placement or target is a preview; backing out consumes no card or
-play. START asks for confirmation while unused plays remain.
+play. START asks for confirmation while unused plays remain. The keep choice
+happens before attacks; if the duel ends on that attack, nothing carries into
+the next duel.
 
 ## Building and verification
 
@@ -113,7 +128,8 @@ make emulator-test PYBOY_PYTHON=/path/to/python-with-pyboy
 The emulator test uses normal buttons, reads RAM for assertions, compares moves
 with the host rules engine, and writes screenshots to `/tmp/card-journey-*.png`.
 It exercises a complete run, placement/target cancellation, inspection, retries,
-and card acquisition. The script also accepts `--lose-run` and
+and card replacement and retention. Frame-by-frame selection checks detect board/card flicker
+and accidental LCD blanking. The script also accepts `--lose-run` and
 `--skip-first-reward` to exercise the loss ending and reward skipping.
 
 ## Source layout and prototype limits
@@ -125,10 +141,12 @@ and card acquisition. The script also accepts `--lose-run` and
 - `src/duel_ui.h`: battle presentation and input, included by `main.c` after the
   shared rendering helpers.
 - `src/main.c`: title, mountain, deck view, rewards, endings, palettes, and audio.
-- `tools/gen_assets.py`: source of generated native 2bpp tile graphics.
+- `tools/gen_assets.py`: source of generated native 2bpp tiles and explorer frames.
+- `tools/scenes.py`: original Antarctic panoramas, deduplicated for CGB VRAM bank 1.
 - `tests/`: deterministic rules tests and emulator smoke driver.
 
 This is the first playable prototype. Full ten-station progression, camps,
-permanent upgrades, more colors/shapes/verbs, and saving are pending. Balance
-and TAKE's usefulness with a two-play limit still need human playtesting.
-See [the implementation plan](../IMPLEMENTATION_PLAN.md).
+permanent upgrades, more colors/shapes/verbs, and saving are pending. Retention,
+color roles, rewards, and match balance still need human playtesting. See the
+[mechanics research and playtest criteria](MECHANICS_RESEARCH.md) and the
+[original implementation plan](../IMPLEMENTATION_PLAN.md).

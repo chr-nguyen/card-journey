@@ -63,11 +63,71 @@ static void duel_stats(uint8_t x, uint8_t y, uint8_t card, uint8_t hp, uint8_t p
     print_u16(x + 2, y, hp, hp < card_health(card) ? P_GOLD : pal);
 }
 
-static void duel_render(void)
+static void duel_compose_selection(void)
 {
-    uint8_t side, lane, i, card, x, amount;
+    uint8_t card, amount, i;
     BattleSide *s = &duel_state.side[PLAYER];
     PlayPreview p;
+    for (i = 0; i < 5; ++i) put(i * 4 + 3, 14, T_TABLE, P_FELT);
+    frect(0, 15, 20, 3, T_BLANK, P_UI);
+    if (duel_state.active == ENEMY) {
+        print_center(15, "OPPONENT THINKING", P_UI);
+        return;
+    }
+    card = s->hand_n ? s->hand[duel_hand] : CARD_NONE;
+    if (card != CARD_NONE)
+        put((duel_hand - duel_scroll) * 4 + 3, 14, T_HAND_PICK, P_GOLD);
+    duel_card_caption(card);
+    if (duel_phase == 3) {
+        print_center(16, "END TURN?", P_GOLD);
+        print_center(17, "A:YES B:BACK", P_UI);
+        return;
+    }
+    if (duel_phase == 4) {
+        print_center(16, "KEEP FOR NEXT TURN?", P_GOLD);
+        print_center(17, "A:KEEP ST:NO B:BACK", P_UI);
+        return;
+    }
+    if (duel_phase == 0) {
+        if (!duel_state.plays) print_center(16, "START TO ATTACK", P_GOLD);
+        else if (!s->hand_n) print_center(16, "NO CARDS: START", P_GOLD);
+        else {
+            print(0, 16, "ATK", P_UI);
+            print_u16(4, 16, card_attack(card), P_UI);
+            print(6, 16, "HP", P_UI);
+            print_u16(9, 16, card_health(card), P_UI);
+            print(12, 16, "SELECTED", P_GOLD);
+        }
+        print_center(17, "A:PLAY ST:END SEL:?", P_UI);
+    } else if (battle_preview(&duel_state, duel_hand, duel_lane, &p)) {
+        amount = p.amount;
+        if (duel_phase == 2 && C_VERB(card) == VERB_GIVE) {
+            BattleSlot *slot = &s->board[duel_target];
+            uint8_t missing = card_health(slot->card) - slot->hp;
+            if (amount > missing) amount = missing;
+        }
+        if (C_VERB(card) == VERB_TAKE) {
+            uint8_t available = s->deck_n + s->discard_n + p.replacing;
+            if (amount > available) amount = available;
+            if (amount > HAND_MAX - s->hand_n + 1) amount = HAND_MAX - s->hand_n + 1;
+        }
+        print(0, 16, p.replacing ? "REPLACE" : "PLACE", P_UI);
+        print_u16(p.replacing ? 8 : 6, 16, duel_lane + 1, P_UI);
+        if (p.amount == 2) put(10, 16, T_STAR1, P_GOLD);
+        print(12, 16, verb_names[C_VERB(card)], P_UI);
+        if (!p.targets && C_VERB(card) != VERB_TAKE) amount = 0;
+        print_u16(18, 16, amount, P_GOLD);
+        print_center(17, duel_phase == 2 ?
+            (C_VERB(card) == VERB_FIGHT ? "A:HIT ENEMY B:BACK" : "A:HEAL ALLY B:BACK") :
+            "A:PLACE B:BACK", P_UI);
+    }
+    SHOW_SPRITES;
+}
+
+static void duel_compose(void)
+{
+    uint8_t side, lane, i;
+    BattleSide *s = &duel_state.side[PLAYER];
     felt();
     frect(0, 1, 20, 5, T_TABLE, P_NEUT);
     frect(0, 6, 20, 5, T_TABLE, P_FELT);
@@ -128,62 +188,54 @@ static void duel_render(void)
         put(19, 12, glyph('/'), P_FELT);
         print_u16(19, 13, s->hand_n, P_FELT);
     }
-    frect(0, 15, 20, 3, T_BLANK, P_UI);
-    hide_sprites();
-    if (duel_state.active == ENEMY) {
-        print_center(15, "OPPONENT THINKING", P_UI);
+    duel_compose_selection();
+}
+
+static void duel_selection_sprites(void)
+{
+    uint8_t x, y, card;
+    /* Publish the whole outline between OAM transfers, without hiding it
+     * during composition or copying a partially moved frame on VBlank. */
+    __critical {
+        if (duel_state.active == ENEMY || duel_phase == 3 ||
+            !duel_state.side[PLAYER].hand_n) hide_sprites();
+        else if (duel_phase == 0 || duel_phase == 4) {
+            move_sprite(0, 0, 0);
+            duel_frame((duel_hand - duel_scroll) * 4, 11);
+        } else {
+            card = duel_state.side[PLAYER].hand[duel_hand];
+            x = lane_x[duel_phase == 2 ? duel_target : duel_lane];
+            y = duel_phase == 2 && C_VERB(card) == VERB_FIGHT ? 1 : 6;
+            duel_frame(x, y);
+            set_sprite_tile(0, S_ARROW_RT);
+            set_sprite_prop(0, 0);
+            move_sprite(0, x * 8, (y + 2) * 8 + 16);
+        }
+    }
+}
+
+static void duel_render(void)
+{
+    video_buffered = 1;
+    duel_compose();
+    video_present();
+    duel_selection_sprites();
+}
+
+static void duel_refresh(void)
+{
+    /* Navigation changes only selection, caption, and preview. A hand scroll
+     * also changes the visible cards, so use the full composition for that. */
+    if (duel_hand < duel_scroll || duel_hand >= duel_scroll + 5) {
+        duel_render();
         return;
     }
-    card = s->hand_n ? s->hand[duel_hand] : CARD_NONE;
-    if (card != CARD_NONE)
-        put((duel_hand - duel_scroll) * 4 + 3, 14, T_HAND_PICK, P_GOLD);
-    duel_card_caption(card);
-    if (duel_phase == 3) {
-        print_center(16, "END TURN?", P_GOLD);
-        print_center(17, "A:YES B:BACK", P_UI);
-        return;
-    }
-    if (duel_phase == 0) {
-        if (card != CARD_NONE) duel_frame((duel_hand - duel_scroll) * 4, 11);
-        if (!duel_state.plays) print_center(16, "START TO ATTACK", P_GOLD);
-        else if (!s->hand_n) print_center(16, "NO CARDS: START", P_GOLD);
-        else {
-            print(0, 16, "ATK", P_UI);
-            print_u16(4, 16, card_attack(card), P_UI);
-            print(6, 16, "HP", P_UI);
-            print_u16(9, 16, card_health(card), P_UI);
-            print(12, 16, "SELECTED", P_GOLD);
-        }
-        print_center(17, "A:PLAY ST:END SEL:?", P_UI);
-    } else if (battle_preview(&duel_state, duel_hand, duel_lane, &p)) {
-        duel_frame(lane_x[duel_phase == 2 ? duel_target : duel_lane],
-                   duel_phase == 2 && C_VERB(card) == VERB_FIGHT ? 1 : 6);
-        set_sprite_tile(0, S_ARROW_RT);
-        set_sprite_prop(0, 0);
-        x = lane_x[duel_phase == 2 ? duel_target : duel_lane];
-        move_sprite(0, x * 8, (duel_phase == 2 && C_VERB(card) == VERB_FIGHT ? 3 : 8) * 8 + 16);
-        amount = p.amount;
-        if (duel_phase == 2 && C_VERB(card) == VERB_GIVE) {
-            BattleSlot *slot = &s->board[duel_target];
-            uint8_t missing = card_health(slot->card) - slot->hp;
-            if (amount > missing) amount = missing;
-        }
-        if (C_VERB(card) == VERB_TAKE) {
-            uint8_t available = s->deck_n + s->discard_n + p.replacing;
-            if (amount > available) amount = available;
-            if (amount > HAND_MAX - s->hand_n + 1) amount = HAND_MAX - s->hand_n + 1;
-        }
-        print(0, 16, p.replacing ? "REPLACE" : "PLACE", P_UI);
-        print_u16(p.replacing ? 8 : 6, 16, duel_lane + 1, P_UI);
-        if (p.amount == 2) put(10, 16, T_STAR1, P_GOLD);
-        print(12, 16, verb_names[C_VERB(card)], P_UI);
-        if (!p.targets && C_VERB(card) != VERB_TAKE) amount = 0;
-        print_u16(18, 16, amount, P_GOLD);
-        print_center(17, duel_phase == 2 ?
-            (C_VERB(card) == VERB_FIGHT ? "A:HIT ENEMY B:BACK" : "A:HEAL ALLY B:BACK") :
-            "A:PLACE B:BACK", P_UI);
-    }
-    SHOW_SPRITES;
+    memcpy(next_tiles, video_tiles, sizeof(next_tiles));
+    memcpy(next_attrs, video_attrs, sizeof(next_attrs));
+    video_buffered = 1;
+    duel_compose_selection();
+    video_present();
+    duel_selection_sprites();
 }
 
 static void duel_inspect(void)
@@ -246,7 +298,7 @@ static void duel_commit(uint8_t target)
         duel_frame((duel_hand - duel_scroll) * 4, 11);
 }
 
-static void duel_attack_animation(void)
+static void duel_attack_animation(uint8_t keep)
 {
     uint8_t lane;
     for (lane = 0; lane < LANES && duel_state.winner == NO_WINNER; ++lane) {
@@ -265,7 +317,7 @@ static void duel_attack_animation(void)
         duel_effect(lane, 1 - duel_state.active, VERB_FIGHT);
         delay_frames(3);
     }
-    battle_next_turn(&duel_state);
+    battle_next_turn(&duel_state, keep);
     duel_phase = duel_hand = duel_scroll = 0;
     duel_render();
 }
@@ -297,7 +349,7 @@ static uint8_t battle_duel(void)
                     duel_effect(move.target, C_VERB(card) == VERB_FIGHT ? PLAYER : ENEMY, C_VERB(card));
                 else if (C_VERB(card) == VERB_TAKE) duel_effect(move.lane, ENEMY, VERB_TAKE);
                 delay_frames(30);
-            } else duel_attack_animation();
+            } else duel_attack_animation(ai_keep(&duel_state));
             continue;
         }
         n = tick();
@@ -305,16 +357,23 @@ static uint8_t battle_duel(void)
         if (n & J_B) {
             if (duel_phase == 2) duel_phase = 1;
             else duel_phase = 0;
-            duel_render();
+            duel_refresh();
+            continue;
+        }
+        if ((n & J_START) && duel_phase == 4) {
+            duel_attack_animation(NO_TARGET);
             continue;
         }
         if ((n & J_START) && duel_phase == 0) {
-            if (duel_state.plays) { duel_phase = 3; duel_render(); }
-            else duel_attack_animation();
+            if (duel_state.plays) { duel_phase = 3; duel_refresh(); }
+            else if (duel_state.side[PLAYER].hand_n) {
+                duel_phase = 4;
+                duel_refresh();
+            } else duel_attack_animation(NO_TARGET);
             continue;
         }
         if (n & (J_LEFT | J_RIGHT)) {
-            if (duel_phase == 0) {
+            if (duel_phase == 0 || duel_phase == 4) {
                 if ((n & J_LEFT) && duel_hand) --duel_hand;
                 if ((n & J_RIGHT) && duel_hand + 1 < duel_state.side[PLAYER].hand_n) ++duel_hand;
             } else if (duel_phase == 1) {
@@ -329,21 +388,28 @@ static uint8_t battle_duel(void)
                 duel_target = i;
             }
             sfx_cursor();
-            duel_render();
+            duel_refresh();
         }
         if (n & J_A) {
-            if (duel_phase == 3) { duel_attack_animation(); continue; }
+            if (duel_phase == 3) {
+                if (duel_state.side[PLAYER].hand_n) {
+                    duel_phase = 4;
+                    duel_refresh();
+                } else duel_attack_animation(NO_TARGET);
+                continue;
+            }
+            if (duel_phase == 4) { duel_attack_animation(duel_hand); continue; }
             if (duel_phase == 0) {
                 if (!duel_state.plays || !duel_state.side[PLAYER].hand_n) { sfx_bad(); continue; }
                 duel_phase = 1;
-                duel_render();
+                duel_refresh();
             } else if (duel_phase == 1 && battle_preview(&duel_state, duel_hand, duel_lane, &p)) {
                 if (!p.targets) duel_commit(NO_TARGET);
                 else {
                     duel_phase = 2;
                     for (i = 0; i < LANES; ++i) if (p.targets & (1 << i)) break;
                     duel_target = i;
-                    duel_render();
+                    duel_refresh();
                 }
             } else if (duel_phase == 2) duel_commit(duel_target);
         }

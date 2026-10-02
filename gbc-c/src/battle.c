@@ -144,20 +144,26 @@ void battle_attack_lane(Battle *b, uint8_t lane)
         b->winner = b->active;
     } else enemy->hp -= amount;
 }
-void battle_next_turn(Battle *b)
+void battle_next_turn(Battle *b, uint8_t keep)
 {
     BattleSide *s;
+    uint8_t i, kept = CARD_NONE;
     if (b->winner != NO_WINNER) return;
     s = &b->side[b->active];
-    while (s->hand_n) s->discard[s->discard_n++] = s->hand[--s->hand_n];
+    if (keep < s->hand_n) kept = s->hand[keep];
+    for (i = 0; i < s->hand_n; ++i)
+        if (i != keep) s->discard[s->discard_n++] = s->hand[i];
+    s->hand_n = kept == CARD_NONE ? 0 : 1;
+    if (s->hand_n) s->hand[0] = kept;
     b->active = 1 - b->active;
     b->plays = 2;
     ++b->turn;
-    battle_draw(b, b->active, 5);
+    s = &b->side[b->active];
+    battle_draw(b, b->active, (uint8_t)(5 - s->hand_n));
 }
-void battle_end_turn(Battle *b)
+void battle_end_turn(Battle *b, uint8_t keep)
 {
     uint8_t lane;
     for (lane = 0; lane < LANES; ++lane) battle_attack_lane(b, lane);
-    battle_next_turn(b);
+    battle_next_turn(b, keep);
 }

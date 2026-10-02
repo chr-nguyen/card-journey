@@ -32,6 +32,6 @@ uint8_t battle_draw(Battle *b, uint8_t side, uint8_t count);
 uint8_t battle_preview(const Battle *b, uint8_t hand, uint8_t lane, PlayPreview *p);
 uint8_t battle_play(Battle *b, uint8_t hand, uint8_t lane, uint8_t target);
 void battle_attack_lane(Battle *b, uint8_t lane);
-void battle_next_turn(Battle *b);
-void battle_end_turn(Battle *b);
+void battle_next_turn(Battle *b, uint8_t keep);
+void battle_end_turn(Battle *b, uint8_t keep);
 #endif

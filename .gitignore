@@ -1,0 +1,5 @@
+# Optional GBDK linker reports and emulator-test Python caches.
+/gbc-c/*.map
+/gbc-c/*.noi
+/gbc-c/*.sym
+__pycache__/

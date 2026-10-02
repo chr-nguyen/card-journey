@@ -1,120 +1,37 @@
-/*
- * CARD JOURNEY - a Game Boy Color card-collecting mountain climb.
- * Built with GBDK-2020.
- *
- * THE GAME
- *   Climb a mountain of ten stations. Every card in your pack has a
- *   COLOR (ruby/amber/jade/azure), a SHAPE with a chip value
- *   (circle 2, square 4, triangle 6, diamond 8) and an ACTION verb
- *   (move/fight/sneak/speak/take/give).
- *
- *   Cards are DUAL-USE, and that is the whole game:
- *     - On the TRAIL, obstacles demand verbs. Spending a card gets you
- *       past, but the card is gone from your pack forever.
- *     - At each STATION you duel with that same pack: pick cards from a
- *       hand of five and play shape-sets (pair, trio, full house...)
- *       scoring chips x mult, Balatro-style, until you beat the goal.
- *   Every card burned on the trail weakens the deck you must win with.
- *
- *   Win a duel, draft one of three new cards. Sacrifice cards at
- *   shrines for permanent talismans. Run out of hearts and you fall.
- */
+/* CARD JOURNEY - a three-lane deck-building battler for Game Boy Color. */
 
 #include <gb/gb.h>
 #include <gb/cgb.h>
 #include <gb/hardware.h>
 #include <rand.h>
 #include <stdint.h>
+#include <string.h>
 #include "assets.h"
+#include "cards.h"
+#include "battle.h"
+#include "ai.h"
 
 /* ------------------------------------------------------------------ */
 /*  Cards                                                              */
 /* ------------------------------------------------------------------ */
 
-/* A card packs into one byte: ccss0vvv */
-#define CARD(c, s, v)   (uint8_t)(((c) << 5) | ((s) << 3) | (v))
-#define C_COLOR(k)      ((uint8_t)((k) >> 5) & 3)
-#define C_SHAPE(k)      ((uint8_t)((k) >> 3) & 3)
-#define C_VERB(k)       ((uint8_t)(k) & 7)
-#define CARD_NONE       0xFF
-#define CHIPVAL(k)      ((uint8_t)((C_SHAPE(k) + 1) << 1))   /* 2/4/6/8 */
-
-enum { V_MOVE, V_FIGHT, V_SNEAK, V_SPEAK, V_TAKE, V_GIVE };
-
-#define MAXC        40      /* pack size limit */
-#define HANDN       5
-#define N_STATIONS  10
-
-/* Talisman bit flags */
-#define TAL_EMBER   0x01    /* FIGHT adds +9 chips instead of +4  */
-#define TAL_ECHO    0x02    /* SPEAK adds +2 mult instead of +1   */
-#define TAL_PRISM   0x04    /* flush adds +4 mult instead of +2   */
-#define TAL_WIND    0x08    /* +1 play each duel                  */
-#define TAL_WOOL    0x10    /* +1 max heart                       */
-#define TAL_LODE    0x20    /* +6 chips on every play             */
-#define N_TALS      6
+#define MAXC DECK_MAX
+#define N_STATIONS 3
 
 /* ------------------------------------------------------------------ */
 /*  Strings                                                            */
 /* ------------------------------------------------------------------ */
 
 static const char * const station_names[N_STATIONS] = {
-    "TRAILHEAD", "MOSS HOLLOW", "OLD BRIDGE", "PINE GATE", "HALF CAMP",
-    "CRAG POINT", "ICE WALL", "WIND SHELF", "STAR LEDGE", "LAST GATE",
-};
-static const uint16_t station_goal[N_STATIONS] = {
-    35, 60, 90, 130, 180, 240, 310, 390, 480, 600,
-};
-enum {
-    MOD_PAIR, MOD_RUBY, MOD_FIGHT, MOD_FLUSH, MOD_SQUARE,
-    MOD_SPEAK, MOD_TRIO, MOD_JADE, MOD_DIAMOND, MOD_FULL,
-};
-static const uint8_t station_mod[N_STATIONS] = {
-    MOD_PAIR, MOD_RUBY, MOD_FIGHT, MOD_FLUSH, MOD_SQUARE,
-    MOD_SPEAK, MOD_TRIO, MOD_JADE, MOD_DIAMOND, MOD_FULL,
-};
-static const char * const mod_descs[10] = {
-    "PAIR +10 CHIPS", "RUBY +2 EACH", "FIGHT +3 EACH",
-    "FLUSH +1 MULT", "SQR +3 EACH", "SPEAK +1 EACH",
-    "TRIO +20 CHIPS", "JADE +2 EACH", "DIA +4 EACH",
-    "FULL +25 CHIPS",
+    "BASE CAMP", "ICE CHASM", "ELDER GATE",
 };
 static const char * const color_names[4] = {
     "RUBY", "AMBER", "JADE", "AZURE",
 };
-static const char * const shape_names[4] = { "CIR", "SQR", "TRI", "DIA" };
-static const char * const verb_names[6] = {
-    "MOVE", "FIGHT", "SNEAK", "SPEAK", "TAKE", "GIVE",
-};
-static const char * const tal_names[N_TALS] = {
-    "EMBER FANG", "ECHO BELL", "PRISM EYE",
-    "FOURTH WIND", "WOOL CHARM", "LODESTONE",
-};
-static const char * const tal_descs[N_TALS] = {
-    "FIGHT ADDS +9 CHIPS", "SPEAK ADDS +2 MULT", "FLUSH ADDS +4 MULT",
-    "+1 PLAY EACH DUEL", "+1 MAX HEART", "+6 CHIPS EVERY PLAY",
-};
-static const char * const hand_names[7] = {
-    "HIGH CARD", "PAIR", "TWO PAIR", "TRIO", "FULL HOUSE", "QUAD", "FIVE!",
+static const char * const shape_names[4] = {
+    "CIRCLE", "SQUARE", "TRIANGLE", "DIAMOND",
 };
 
-/* Trail encounters */
-enum { E_CHASM, E_WOLF, E_GUARD, E_ICEFALL, E_CACHE, E_SHRINE, E_TRAVELER };
-static const char * const enc_names[7] = {
-    "A WIDE CHASM!", "A HUNGRY WOLF!", "A SURLY GUARD!", "FALLING ICE!",
-    "A LOST CACHE!", "A QUIET SHRINE.", "A KIND TRAVELER.",
-};
-/* verb bitmask a card must match to answer the encounter */
-static const uint8_t enc_verbs[7] = {
-    (1 << V_MOVE),
-    (1 << V_FIGHT) | (1 << V_SNEAK),
-    (1 << V_SPEAK) | (1 << V_FIGHT),
-    (1 << V_MOVE) | (1 << V_SNEAK),
-    (1 << V_TAKE),
-    (1 << V_GIVE),      /* the shrine wants an offering */
-    (1 << V_SPEAK),
-};
-static const uint8_t enc_hostile[7] = { 1, 1, 1, 1, 0, 0, 0 };
 
 /* ------------------------------------------------------------------ */
 /*  Game state                                                         */
@@ -124,18 +41,7 @@ static uint8_t coll[MAXC];      /* your pack (whole collection)   */
 static uint8_t coll_n;
 static uint8_t station;         /* next station to challenge 0..9 */
 static uint8_t hearts, hearts_max;
-static uint8_t tals;            /* talisman bit flags             */
 static uint8_t joy_prev;
-
-/* the opening pack: 20 cards, verb- and shape-balanced */
-static const uint8_t start_pack[20] = {
-    CARD(0,0,V_MOVE),  CARD(1,0,V_MOVE),  CARD(2,1,V_MOVE),  CARD(3,0,V_MOVE),
-    CARD(0,1,V_FIGHT), CARD(1,0,V_FIGHT), CARD(2,0,V_FIGHT), CARD(3,2,V_FIGHT),
-    CARD(1,1,V_SNEAK), CARD(2,0,V_SNEAK), CARD(3,1,V_SNEAK),
-    CARD(0,0,V_SPEAK), CARD(2,2,V_SPEAK), CARD(3,0,V_SPEAK),
-    CARD(0,2,V_TAKE),  CARD(1,1,V_TAKE),  CARD(2,3,V_TAKE),
-    CARD(0,1,V_GIVE),  CARD(1,2,V_GIVE),  CARD(3,3,V_GIVE),
-};
 
 /* ------------------------------------------------------------------ */
 /*  Palettes                                                           */
@@ -148,56 +54,49 @@ static const uint8_t start_pack[20] = {
 #define P_FELT  6
 #define P_GOLD  7
 static const palette_color_t pals_table[32] = {
-    RGB_WHITE, RGB(21,21,23), RGB(12,12,14), RGB_BLACK,
-    RGB_WHITE, RGB(29, 5, 7), RGB(16, 2, 4), RGB_BLACK,
-    RGB_WHITE, RGB(30,20, 2), RGB(21,12, 0), RGB_BLACK,
-    RGB_WHITE, RGB( 4,22, 9), RGB( 2,12, 5), RGB_BLACK,
-    RGB_WHITE, RGB( 6,11,29), RGB( 3, 6,17), RGB_BLACK,
-    RGB_WHITE, RGB(19,17,24), RGB(11,10,15), RGB_BLACK,
-    RGB( 3,11, 7), RGB( 4,14, 9), RGB( 2, 8, 5), RGB_WHITE,
-    RGB_WHITE, RGB(31,24, 6), RGB(24,15, 0), RGB(20,12, 0),
+    RGB( 3, 4, 7), RGB( 9,10,14), RGB(16,17,20), RGB(28,27,22),
+    RGB(26,25,19), RGB(24, 8,12), RGB(13, 5,10), RGB( 3, 3, 6),
+    RGB(27,25,19), RGB(26,18, 8), RGB(14, 9, 7), RGB( 3, 3, 6),
+    RGB(25,27,21), RGB(10,21,16), RGB( 4,11,12), RGB( 3, 3, 6),
+    RGB(25,26,24), RGB(12,16,24), RGB( 7, 8,15), RGB( 3, 3, 6),
+    RGB( 9, 6,13), RGB(10, 7,14), RGB(18,13,22), RGB(30,25,29), /* enemy */
+    RGB( 3, 9,10), RGB( 4,10,11), RGB(10,19,18), RGB(25,29,25), /* yours */
+    RGB( 3, 7, 9), RGB(25,22,12), RGB(10,16,17), RGB(31,30,19),
 };
 
-/* the map set: day-lit mountain */
+/* Antarctic night, blue ice, and pale green light in the elder masonry. */
 #define P_SCENE 1
-#define P_FLAGR 2               /* flag on rock  */
-#define P_TREE  3
 #define P_RED   4
-#define P_FLAGS 7               /* flag on snow  */
 static const palette_color_t pals_map[32] = {
-    RGB_WHITE, RGB(21,21,23), RGB(12,12,14), RGB_BLACK,
-    RGB(17,24,31), RGB(30,31,31), RGB(14,11, 9), RGB( 4, 3, 3),
-    RGB(14,11, 9), RGB(30, 4, 5), RGB(22,22,22), RGB( 4, 3, 3),
-    RGB(14,11, 9), RGB( 6,18, 8), RGB( 3,11, 5), RGB( 7, 5, 3),
-    RGB_WHITE, RGB(30, 4, 5), RGB(18, 2, 3), RGB_BLACK,
-    RGB_WHITE, RGB(31,24, 6), RGB(22,15, 0), RGB_BLACK,
-    RGB_WHITE, RGB(19,17,24), RGB(11,10,15), RGB_BLACK,
-    RGB(30,31,31), RGB(30, 4, 5), RGB(22,22,22), RGB( 4, 3, 3),
+    RGB( 3, 4, 7), RGB( 9,10,14), RGB(16,17,20), RGB(28,27,22),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 3, 4, 7), RGB(28, 8,10), RGB(15, 4, 8), RGB(29,23,18),
+    RGB( 2, 4, 9), RGB(24,29,22), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 3, 4, 7), RGB(28,27,21), RGB( 8,15,17), RGB(28,27,21),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
 };
 
-/* the title set: night sky bands, moonlit silhouette */
 #define TP_SKY0 0
-#define TP_SKY1 1
-#define TP_SKY2 2
-#define TP_SKY3 3
-#define TP_MTN  4
-#define TP_MOON 5
-#define TP_GND  6
+#define TP_GND  0
 #define TP_GOLD 7
 static const palette_color_t pals_title[32] = {
-    RGB( 1, 1, 7), RGB( 4, 4,12), RGB( 2, 2, 9), RGB_WHITE,
-    RGB( 2, 2,11), RGB( 5, 5,16), RGB( 3, 3,13), RGB_WHITE,
-    RGB( 4, 4,16), RGB( 8, 7,21), RGB( 6, 5,18), RGB_WHITE,
-    RGB( 7, 6,21), RGB(11,10,26), RGB( 9, 8,23), RGB_WHITE,
-    RGB( 7, 6,21), RGB(26,27,31), RGB( 3, 2, 6), RGB_WHITE,
-    RGB( 1, 1, 7), RGB(30,29,18), RGB( 2, 2, 9), RGB_WHITE,
-    RGB( 2, 2, 4), RGB( 4, 4, 8), RGB( 1, 1, 2), RGB_WHITE,
-    RGB( 4, 4,16), RGB( 8, 7,21), RGB( 6, 5,18), RGB(31,26,10),
+    RGB( 2, 4, 9), RGB( 7,11,16), RGB(12,18,21), RGB(27,29,23),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(24,29,22), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(25,29,28), RGB(10,16,21), RGB( 1, 2, 5),
+    RGB( 2, 4, 9), RGB(12,19,19), RGB( 7,12,16), RGB(24,29,22),
 };
 
-static const palette_color_t pals_spr[8] = {
-    0, RGB_WHITE, RGB(31,10,10), RGB_BLACK,          /* cursor arrow */
-    0, RGB(30,22,16), RGB(28, 4, 6), RGB_BLACK,      /* climber      */
+static const palette_color_t pals_spr[16] = {
+    0, RGB(31,29,19), RGB(31,23, 8), RGB(17,10, 5), /* gold cursor */
+    0, RGB(30,28,22), RGB(23, 8, 7), RGB( 2, 2, 5), /* explorer     */
+    0, RGB(25,31,24), RGB( 9,24,14), RGB( 3,11,10), /* healing      */
+    0, RGB(31,29,22), RGB(31,12, 8), RGB(16, 4, 7), /* sword impact */
 };
 
 /* live palette buffer so screens can fade in and out */
@@ -208,12 +107,56 @@ static const palette_color_t *pal_cur;
 /*  Low-level video helpers                                            */
 /* ------------------------------------------------------------------ */
 
+/* Compose a complete duel in RAM. Intermediate clears never reach VRAM.
+ * Direct drawing also maintains the cache, including effects and inspection. */
+static uint8_t video_tiles[360], video_attrs[360];
+static uint8_t next_tiles[360], next_attrs[360];
+static uint8_t video_buffered;
+
 static void put(uint8_t x, uint8_t y, uint8_t t, uint8_t pal)
 {
+    uint16_t at = (uint16_t)y * 20 + x;
+    if (video_buffered) {
+        next_tiles[at] = t;
+        next_attrs[at] = pal;
+        return;
+    }
+    video_tiles[at] = t;
+    video_attrs[at] = pal;
     set_bkg_tile_xy(x, y, t);
     VBK_REG = 1;
     set_bkg_tile_xy(x, y, pal);
     VBK_REG = 0;
+}
+
+static void video_present(void)
+{
+    uint8_t x, y, start, end, i;
+    uint16_t row;
+    video_buffered = 0;
+    for (y = 0; y < 18; ++y) {
+        row = (uint16_t)y * 20;
+        start = 20;
+        end = 0;
+        for (x = 0; x < 20; ++x) {
+            if (next_tiles[row+x] != video_tiles[row+x] ||
+                next_attrs[row+x] != video_attrs[row+x]) {
+                if (start == 20) start = x;
+                end = x + 1;
+            }
+        }
+        if (start == 20) continue;
+        /* A maximum of twenty tile IDs and attributes per VBlank. */
+        if (LCDC_REG & LCDCF_ON) wait_vbl_done();
+        VBK_REG = 1;
+        set_bkg_tiles(start, y, end-start, 1, next_attrs + row + start);
+        VBK_REG = 0;
+        set_bkg_tiles(start, y, end-start, 1, next_tiles + row + start);
+        for (i = start; i < end; ++i) {
+            video_tiles[row+i] = next_tiles[row+i];
+            video_attrs[row+i] = next_attrs[row+i];
+        }
+    }
 }
 
 static void frect(uint8_t x, uint8_t y, uint8_t w, uint8_t h,
@@ -265,7 +208,7 @@ static void print_center(uint8_t y, const char *s, uint8_t pal)
     print((uint8_t)(20 - str_len(s)) >> 1, y, s, pal);
 }
 
-/* rounded white dialog box */
+/* framed dark dialog box */
 static void window(uint8_t x, uint8_t y, uint8_t w, uint8_t h)
 {
     uint8_t i;
@@ -411,25 +354,9 @@ static uint8_t rnd(uint8_t n)
 
 static uint8_t random_card(void)
 {
-    static const uint8_t shape_w[10] = { 0,0,0,0, 1,1,1, 2,2, 3 };
-    return CARD(rnd(4), shape_w[rnd(10)], rnd(6));
+    return card_reward(rnd(REWARD_COUNT));
 }
 
-static uint8_t weighted_shape(void)
-{
-    static const uint8_t shape_w[10] = { 0,0,0,0, 1,1,1, 2,2, 3 };
-    return shape_w[rnd(10)];
-}
-
-/* Reward options should answer three different player needs. */
-static uint8_t least_common_verb(void)
-{
-    uint8_t counts[6] = { 0, 0, 0, 0, 0, 0 }, i, best = 0;
-    for (i = 0; i < coll_n; i++) counts[C_VERB(coll[i])]++;
-    for (i = 1; i < 6; i++)
-        if (counts[i] < counts[best]) best = i;
-    return best;
-}
 
 static uint8_t strongest_color(void)
 {
@@ -440,84 +367,46 @@ static uint8_t strongest_color(void)
     return best;
 }
 
-static void shuffle(uint8_t *a, uint8_t n)
-{
-    uint8_t i, j, t;
-    for (i = n - 1; i > 0; i--) {
-        j = rnd(i + 1);
-        t = a[i]; a[i] = a[j]; a[j] = t;
-    }
-}
-
-static void coll_remove(uint8_t idx)
-{
-    coll[idx] = coll[--coll_n];
-}
-
-static uint8_t coll_add(uint8_t card)   /* 0 if the pack is full */
-{
-    if (coll_n >= MAXC) return 0;
-    coll[coll_n++] = card;
-    return 1;
-}
-
 /* ------------------------------------------------------------------ */
 /*  Card drawing                                                       */
 /* ------------------------------------------------------------------ */
 
 static void draw_card(uint8_t x, uint8_t y, uint8_t card)
 {
-    uint8_t pal = P_RUBY + C_COLOR(card);
-    put(x, y, T_CARD_TL, pal);  put(x+1, y, T_CARD_T, pal);
+    uint8_t pal = P_RUBY + C_COLOR(card), i;
+    uint8_t portrait = T_CARD_WISP_0 + C_SHAPE(card) * 6;
+    put(x, y, T_CARD_TL, pal);
+    put(x+1, y, T_SEAL_CIRCLE + C_SHAPE(card), pal);
     put(x+2, y, T_CARD_TR, pal);
-    put(x, y+1, T_CARD_L, pal);
-    put(x+1, y+1, T_SHP_CIR + C_SHAPE(card), pal);
-    put(x+2, y+1, T_CARD_R, pal);
-    put(x, y+2, T_CARD_L, pal);
-    put(x+1, y+2, T_ICO_MOVE + C_VERB(card), pal);
-    put(x+2, y+2, T_CARD_R, pal);
-    put(x, y+3, T_CARD_BL, pal); put(x+1, y+3, T_CARD_B, pal);
+    for (i = 0; i < 6; ++i)
+        put(x + i % 3, y + 1 + i / 3, portrait + i, pal);
+    put(x, y+3, T_CARD_BL, pal);
+    put(x+1, y+3, T_ICO_MOVE + C_VERB(card), pal);
     put(x+2, y+3, T_CARD_BR, pal);
 }
 
-static void draw_cardback(uint8_t x, uint8_t y)
-{
-    put(x, y, T_CARD_TL, P_NEUT);  put(x+1, y, T_CARD_T, P_NEUT);
-    put(x+2, y, T_CARD_TR, P_NEUT);
-    put(x, y+1, T_CARD_L, P_NEUT); put(x+1, y+1, T_WEAVE_A, P_NEUT);
-    put(x+2, y+1, T_CARD_R, P_NEUT);
-    put(x, y+2, T_CARD_L, P_NEUT); put(x+1, y+2, T_SHP_DIA, P_NEUT);
-    put(x+2, y+2, T_CARD_R, P_NEUT);
-    put(x, y+3, T_CARD_BL, P_NEUT); put(x+1, y+3, T_CARD_B, P_NEUT);
-    put(x+2, y+3, T_CARD_BR, P_NEUT);
-}
 
-/* "RUBY TRI-6 FIGHT" style caption, centered on row y */
+/* "RUBY TRIANGLE" style caption, centered on row y. */
 static void print_card_name(uint8_t y, uint8_t card, uint8_t pal)
 {
-    uint8_t x = (uint8_t)(20 - (str_len(color_names[C_COLOR(card)]) + 7
-                 + str_len(verb_names[C_VERB(card)]))) >> 1;
+    uint8_t x = (uint8_t)(19 - (str_len(color_names[C_COLOR(card)]) +
+                 str_len(shape_names[C_SHAPE(card)]))) >> 1;
     frect(1, y, 18, 1, T_BLANK, pal);
     print(x, y, color_names[C_COLOR(card)], pal);
     x += str_len(color_names[C_COLOR(card)]) + 1;
     print(x, y, shape_names[C_SHAPE(card)], pal);
-    x += 3;
-    put(x++, y, glyph('-'), pal);
-    x = print_u16(x, y, CHIPVAL(card), pal);
-    x++;
-    print(x, y, verb_names[C_VERB(card)], pal);
 }
 
-/* felt table backdrop used by all card screens */
+/* quiet stone backdrop used by all card screens */
 static void felt(void)
 {
-    frect(0, 0, 20, 18, T_DITH12, P_FELT);
+    frect(0, 0, 20, 18, T_TABLE, P_FELT);
 }
 
 static void hide_sprites(void)
 {
     uint8_t i;
-    for (i = 0; i < 8; i++) move_sprite(i, 0, 0);
+    for (i = 0; i < 11; i++) move_sprite(i, 0, 0);
 }
 
 static void screen_open(const palette_color_t *set)
@@ -537,7 +426,7 @@ static void screen_close(void)
 /*  Big 2x letters for the title (scaled from the font at runtime)     */
 /* ------------------------------------------------------------------ */
 
-#define DYN_BASE 112
+#define DYN_BASE BG_TILE_COUNT
 static const uint8_t exp4[16] = {
     0x00,0x03,0x0C,0x0F,0x30,0x33,0x3C,0x3F,
     0xC0,0xC3,0xCC,0xCF,0xF0,0xF3,0xFC,0xFF,
@@ -581,51 +470,38 @@ static uint8_t big_text(const char *s, uint8_t x, uint8_t y,
 /*  Title screen                                                       */
 /* ------------------------------------------------------------------ */
 
-static uint8_t sky_pal(uint8_t y)
+/* Scene tiles live in CGB bank 1; card/font/sprite patterns stay in bank 0. */
+static void load_scene(const uint8_t *tiles, uint8_t count,
+                       const uint8_t *map, uint8_t y, uint8_t rows)
 {
-    if (y < 4) return TP_SKY0;
-    if (y < 7) return TP_SKY1;
-    if (y < 9) return TP_SKY2;
-    return TP_SKY3;
+    uint8_t x, row;
+    VBK_REG = 1;
+    set_bkg_data(0, count, tiles);
+    VBK_REG = 0;
+    for (row = y; row < y + rows; ++row)
+        for (x = 0; x < 20; ++x)
+            put(x, row, *map++, 0x08 | P_SCENE);
+}
+
+static void explorer(uint8_t x, uint8_t y, uint8_t frame)
+{
+    uint8_t i;
+    for (i = 0; i < 4; ++i) {
+        set_sprite_tile(1+i, (frame ? S_EXPLORER_B_0 : S_EXPLORER_A_0)+i);
+        set_sprite_prop(1+i, 1);
+        move_sprite(1+i, x+(i&1)*8, y+(i/2)*8);
+    }
+    SHOW_SPRITES;
 }
 
 static void draw_night_scene(void)
 {
-    uint8_t x, y, dyn;
-
-    /* banded night sky */
-    for (y = 0; y < 16; y++)
-        for (x = 0; x < 20; x++)
-            put(x, y, T_BLANK, sky_pal(y));
-    /* ground band */
-    frect(0, 16, 20, 2, T_DITH12, TP_GND);
-
-    /* stars and moon */
-    put(2, 1, T_STAR1, TP_SKY0);  put(16, 0, T_STAR2, TP_SKY0);
-    put(6, 2, T_STAR2, TP_SKY0);  put(12, 1, T_STAR2, TP_SKY0);
-    put(1, 5, T_STAR2, TP_SKY1);  put(18, 4, T_STAR1, TP_SKY1);
-    put(4, 8, T_STAR1, TP_SKY2);  put(15, 7, T_STAR2, TP_SKY2);
-    put(17, 2, T_MOON, TP_MOON);
-
-    /* moonlit mountain silhouette, apex at (10,10) */
-    for (y = 10; y < 16; y++) {
-        uint8_t hw = (uint8_t)(y - 10) * 2;
-        uint8_t on_l = (10 >= hw + 1);
-        uint8_t on_r = (10 + hw + 1 <= 19);
-        uint8_t lx = on_l ? 10 - hw - 1 : 0;
-        uint8_t rx = on_r ? 10 + hw + 1 : 19;
-        uint8_t fill_t = (y < 12) ? T_SNOW : T_ROCK;
-        uint8_t f;
-        if (on_l) put(lx, y, (y < 12) ? T_SNOW_L : T_ROCK_L, TP_MTN);
-        if (on_r) put(rx, y, (y < 12) ? T_SNOW_R : T_ROCK_R, TP_MTN);
-        for (f = lx + on_l; f <= rx - on_r; f++)
-            put(f, y, (y == 12) ? T_SNOWCAP : fill_t, TP_MTN);
-    }
-
-    /* the big logo (band palettes keep the sky gradient behind it) */
-    dyn = big_text("CARD", 6, 2, sky_pal(2), DYN_BASE);
-    big_text("JOURNEY", 3, 5, sky_pal(5), dyn);
-    print_center(8, "THE TEN STATIONS", TP_GOLD);
+    uint8_t dyn;
+    load_scene(title_scene_tiles, TITLE_SCENE_COUNT, title_scene_map, 0, 18);
+    dyn = big_text("CARD", 6, 1, TP_GOLD, DYN_BASE);
+    big_text("JOURNEY", 3, 3, TP_GOLD, dyn);
+    print_center(5, "BEYOND THE ICE", TP_SKY0);
+    explorer(28, 116, 0);
 }
 
 static void title_screen(void)
@@ -643,13 +519,8 @@ static void title_screen(void)
         seed++;
         t++;
         if (n & J_START) break;
-        /* twinkle: blink PRESS START, swap a star */
-        if ((t & 31) == 0)
-            print_center(16, "PRESS START", TP_GND);
-        else if ((t & 31) == 16)
-            frect(4, 16, 12, 1, T_DITH12, TP_GND);
-        if ((t & 63) == 0)  put(2, 1, T_STAR2, TP_SKY0);
-        if ((t & 63) == 32) put(2, 1, T_STAR1, TP_SKY0);
+        /* Keep the call to action readable while the explorer's scarf moves. */
+        explorer(28, 116, (t >> 5) & 1);
     }
     initrand(seed + DIV_REG);
     sfx_pick();
@@ -680,19 +551,19 @@ static void help_page(const char * const *lines, uint8_t n,
 static void help_screens(void)
 {
     static const char * const p1[8] = {
-        "PLAY SHAPE SETS:", "PAIR TRIO QUAD...",
-        "PTS = CHIPS x MULT", "CIR2 SQR4",
-        "TRI6 DIA8", "ONE COLOR = FLUSH!",
-        "FIGHT ADDS CHIPS,", "SPEAK ADDS MULT.",
+        "PLAY UP TO 2 CARDS.", "FIRST TURN: 1 PLAY.",
+        "START: END OR KEEP.", "CARDS ATTACK AHEAD.",
+        "EMPTY LANE: HIT FOE.", "SHAPE SETS ATK / HP.",
+        "CIR 2/2 SQR 1/4", "TRIANGLE 3/1",
     };
     static const char * const p2[8] = {
-        "OBSTACLES NEED", "ACTION CARDS. SPENT",
-        "CARDS ARE GONE", "FOR GOOD!",
-        "CACHE: TAKE=CARDS", "SHRINE: GIVE=CHARM",
-        "TALK: SPEAK=HEART", "REACH STATION TEN!",
+        "RUBY: FIGHT + TAKE", "JADE: GIVE + TAKE",
+        "MATCH ADJACENT COLOR", "BOOSTS ENTRY VERBS.",
+        "FIGHT: HIT A CARD.", "GIVE: HEAL AN ALLY.",
+        "TAKE: DRAW CARDS.", "WIN: REPLACE A CARD.",
     };
-    help_page(p1, 8, "THE DUEL");
-    help_page(p2, 8, "THE TRAIL");
+    help_page(p1, 8, "THREE LANE DUELS");
+    help_page(p2, 8, "COLOR CONNECTIONS");
 }
 
 /* ------------------------------------------------------------------ */
@@ -700,10 +571,10 @@ static void help_screens(void)
 /* ------------------------------------------------------------------ */
 
 static const uint8_t flag_x[N_STATIONS + 1] = {
-    4, 15, 7, 13, 6, 12, 8, 12, 9, 11, 10
+    4, 8, 14, 11
 };
 static const uint8_t flag_y[N_STATIONS + 1] = {
-    13, 13, 12, 11, 10, 9, 8, 8, 5, 4, 3
+    13, 10, 7, 4
 };
 
 static void draw_hud(void)
@@ -717,64 +588,29 @@ static void draw_hud(void)
     print(12, 0, "STN", P_UI);
     print_u16(16, 0, station + 1, P_UI);
     if (station + 1 < 10) { put(17, 0, glyph('/'), P_UI);
-                            print(18, 0, "10", P_UI); }
+                            print(18, 0, "3", P_UI); }
     else print(18, 0, "  ", P_UI);
 }
 
 static void draw_map_scene(void)
 {
-    uint8_t x, y, i;
-
-    /* sky, then the day-lit mountain: apex (10,3), snow to row 6 */
-    frect(0, 1, 20, 14, T_BLANK, P_SCENE);
-    for (y = 3; y < 15; y++) {
-        uint8_t hw = y - 3;
-        uint8_t on_l = (10 >= hw + 1);
-        uint8_t on_r = (10 + hw + 1 <= 19);
-        uint8_t lx = on_l ? 10 - hw - 1 : 0;
-        uint8_t rx = on_r ? 10 + hw + 1 : 19;
-        uint8_t snow = (y <= 6);
-        if (on_l) put(lx, y, snow ? T_SNOW_L : T_ROCK_L, P_SCENE);
-        if (on_r) put(rx, y, snow ? T_SNOW_R : T_ROCK_R, P_SCENE);
-        for (x = lx + on_l; x <= rx - on_r; x++)
-            put(x, y, (y == 7) ? T_SNOWCAP : (snow ? T_SNOW : T_ROCK),
-                P_SCENE);
-    }
-    /* foothill pines */
-    put(1, 13, T_TREE_TOP, P_TREE); put(1, 14, T_TREE_BOT, P_TREE);
-    put(18, 12, T_TREE_TOP, P_TREE); put(18, 13, T_TREE_BOT, P_TREE);
-
-    /* path dots + station flags */
-    for (i = 0; i < N_STATIONS; i++) {
-        uint8_t mx = (uint8_t)(flag_x[i] + flag_x[i + 1]) >> 1;
-        uint8_t my = (uint8_t)(flag_y[i] + flag_y[i + 1]) >> 1;
-        uint8_t p = (my <= 6) ? P_FLAGS : P_FLAGR;
-        put(mx, my, T_PATHDOT, p);
-    }
-    for (i = 0; i <= N_STATIONS; i++) {
-        uint8_t p = (flag_y[i] <= 6) ? P_FLAGS : P_FLAGR;
-        uint8_t done = (i < station);
-        put(flag_x[i], flag_y[i], done ? T_FLAG_DONE : T_FLAG, p);
+    uint8_t i;
+    load_scene(map_scene_tiles, MAP_SCENE_COUNT, map_scene_map, 1, 14);
+    /* Transparent flags preserve the ice and trail beneath each landmark. */
+    for (i = 0; i <= N_STATIONS; ++i) {
+        set_sprite_tile(5+i, S_ROUTE_FLAG);
+        set_sprite_prop(5+i, i < station ? 2 : 3);
+        move_sprite(5+i, flag_x[i]*8+8, flag_y[i]*8+16);
     }
 }
 
 static void draw_map_footer(void)
 {
-    const char *trail;
     frect(0, 15, 20, 3, T_BLANK, P_UI);
-    print(0, 15, "MOD:", P_GOLD);
-    print(4, 15, mod_descs[station_mod[station]], P_UI);
-    print(0, 16, "NEXT:", P_UI);
-    print(6, 16, station_names[station], P_UI);
-    print(0, 17, "GOAL", P_GOLD);
-    print_u16(5, 17, station_goal[station], P_GOLD);
-    if (station == 0) trail = "CALM START";
-    else if (station == 1 || station == 4 || station == 7)
-        trail = "CACHE: TAKE";
-    else if (station == 2 || station == 5 || station == 8)
-        trail = "SHRINE:GIVE";
-    else trail = "DANGER";
-    print(9, 17, trail, P_UI);
+    print(0, 15, "NEXT:", 6);
+    print(6, 15, station_names[station], P_UI);
+    print_center(16, "WIN A THREE LANE DUEL", P_UI);
+    print_center(17, "12 HP / 2 PLAYS", P_UI);
 }
 
 static void draw_map_controls(void)
@@ -787,31 +623,27 @@ static void draw_map_controls(void)
 static uint8_t map_screen(void)
 {
     uint8_t t = 0, n;
-    uint8_t px = flag_x[station] * 8 + 8;
-    uint8_t py = flag_y[station] * 8 + 14;
-    if (station == 0) { px = 2 * 8 + 8; py = 14 * 8 + 14; }
+    uint8_t px = flag_x[station] * 8 - 4;
+    uint8_t py = flag_y[station] * 8 + 8;
+    if (station == 0) { px = 24; py = 112; }
 
     DISPLAY_OFF;
     draw_hud();
     draw_map_scene();
     draw_map_footer();
-    set_sprite_tile(1, S_CLIMBER_A);
-    set_sprite_prop(1, 1);
-    move_sprite(1, px, py);
+    explorer(px, py, 0);
     SHOW_SPRITES;
     screen_open(pals_map);
 
     for (;;) {
         n = tick();
         t++;
-        set_sprite_tile(1, (t & 16) ? S_CLIMBER_B : S_CLIMBER_A);
+        explorer(px, py, (t >> 5) & 1);
         if (t == 120) {
             draw_map_controls();
         } else if (t == 240) {
             t = 0;
-            frect(0, 15, 20, 1, T_BLANK, P_UI);
-            print(0, 15, "MOD:", P_GOLD);
-            print(4, 15, mod_descs[station_mod[station]], P_UI);
+            draw_map_footer();
         }
         if (n & (J_A | J_SELECT | J_START)) {
             sfx_pick();
@@ -827,326 +659,77 @@ static uint8_t map_screen(void)
 
 static void pack_view(void)
 {
-    uint8_t i, v, counts[6] = { 0, 0, 0, 0, 0, 0 };
-    DISPLAY_OFF;
-    felt();
-    window(0, 0, 20, 18);
-    print(1, 1, "YOUR PACK:", P_UI);
-    print_u16(11, 1, coll_n, P_UI);
-    for (i = 0; i < coll_n; i++) {
-        uint8_t x = 1 + (i % 6) * 3;
-        uint8_t y = 3 + (i / 6) * 2;
-        uint8_t p = P_RUBY + C_COLOR(coll[i]);
-        put(x, y, T_SHP_CIR + C_SHAPE(coll[i]), p);
-        put(x + 1, y, T_ICO_MOVE + C_VERB(coll[i]), p);
-        counts[C_VERB(coll[i])]++;
-    }
-    /* A quick answer to the important trail question: what can I spend? */
-    for (v = 0; v < 6; v++) {
-        put(v * 3, 17, T_ICO_MOVE + v, P_UI);
-        print_u16(v * 3 + 1, 17, counts[v], P_UI);
-    }
-    print_center(16, "B:BACK", P_UI);
-    screen_open(pals_table);
-    wait_press(J_B | J_A | J_START);
-    sfx_pick();
-    screen_close();
-}
-
-/* ------------------------------------------------------------------ */
-/*  The duel                                                           */
-/* ------------------------------------------------------------------ */
-
-static uint8_t duel_deck[MAXC], dd_n;
-static uint8_t discards[MAXC], dis_n;
-static uint8_t hand[HANDN];
-static uint8_t sel;                     /* bitmask of raised cards */
-static uint16_t score, goal;
-static uint8_t plays, swaps;
-
-#define SLOT_X(i)  ((i) * 4)
-#define HAND_Y     10
-#define PLAY_Y     3
-
-static void duel_refill_deck(void)
-{
-    uint8_t i;
-    for (i = 0; i < dis_n; i++) duel_deck[i] = discards[i];
-    dd_n = dis_n;
-    dis_n = 0;
-    if (dd_n > 1) shuffle(duel_deck, dd_n);
-}
-
-static uint8_t duel_draw(void)
-{
-    if (!dd_n) duel_refill_deck();
-    if (!dd_n) return CARD_NONE;
-    return duel_deck[--dd_n];
-}
-
-static void draw_slot(uint8_t i)
-{
-    frect(SLOT_X(i), HAND_Y - 1, 3, 5, T_DITH12, P_FELT);
-    if (hand[i] == CARD_NONE) return;
-    draw_card(SLOT_X(i), (sel & (1 << i)) ? HAND_Y - 1 : HAND_Y, hand[i]);
-}
-
-static void duel_hud(void)
-{
-    frect(0, 0, 20, 3, T_BLANK, P_UI);
-    print(0, 0, "STN", P_UI);
-    print_u16(4, 0, station + 1, P_UI);
-    print(6, 0, station_names[station], P_UI);
-    print(0, 1, "GOAL", P_UI);
-    print_u16(5, 1, goal, P_UI);
-    print(11, 1, "PTS", P_GOLD);
-    print_u16(15, 1, score, P_GOLD);
-    print(0, 2, "PLAY", P_UI);
-    print_u16(5, 2, plays, P_UI);
-    print(7, 2, "SWAP", P_UI);
-    print_u16(12, 2, swaps, P_UI);
-    put(15, 2, T_ICO_DECK, P_UI);
-    print_u16(16, 2, dd_n, P_UI);
-}
-
-static void duel_msg(const char *s)
-{
-    frect(0, 7, 20, 2, T_BLANK, P_UI);
-    print_center(7, s, P_UI);
-}
-
-static void move_cursor_to(uint8_t i)
-{
-    move_sprite(0, (uint8_t)(SLOT_X(i) * 8 + 20), (HAND_Y + 4) * 8 + 16);
-}
-
-/* Score the raised cards. With show set, also explain the result. */
-static uint16_t score_selection(uint8_t show)
-{
-    uint8_t cnt[4] = { 0, 0, 0, 0 };
-    uint8_t i, n = 0, c0 = 0, c1 = 0, htype;
-    uint8_t first_col = 0xFF, flush = 1;
-    uint16_t chips;
-    uint8_t mult;
-
-    chips = (tals & TAL_LODE) ? 6 : 0;
-    mult = 0;
-    for (i = 0; i < HANDN; i++) {
-        uint8_t k;
-        if (!(sel & (1 << i))) continue;
-        k = hand[i];
-        n++;
-        cnt[C_SHAPE(k)]++;
-        chips += CHIPVAL(k);
-        if (C_VERB(k) == V_FIGHT) chips += (tals & TAL_EMBER) ? 9 : 4;
-        if (C_VERB(k) == V_SPEAK) mult += (tals & TAL_ECHO) ? 2 : 1;
-        if (station_mod[station] == MOD_RUBY && C_COLOR(k) == 0) chips += 2;
-        if (station_mod[station] == MOD_FIGHT && C_VERB(k) == V_FIGHT)
-            chips += 3;
-        if (station_mod[station] == MOD_SQUARE && C_SHAPE(k) == 1) chips += 3;
-        if (station_mod[station] == MOD_SPEAK && C_VERB(k) == V_SPEAK)
-            mult++;
-        if (station_mod[station] == MOD_JADE && C_COLOR(k) == 2) chips += 2;
-        if (station_mod[station] == MOD_DIAMOND && C_SHAPE(k) == 3) chips += 4;
-        if (first_col == 0xFF) first_col = C_COLOR(k);
-        else if (C_COLOR(k) != first_col) flush = 0;
-    }
-    for (i = 0; i < 4; i++) {
-        if (cnt[i] >= c0) { c1 = c0; c0 = cnt[i]; }
-        else if (cnt[i] > c1) c1 = cnt[i];
-    }
-    if      (c0 >= 5)           { htype = 6; chips += 70; mult += 7; }
-    else if (c0 == 4)           { htype = 5; chips += 50; mult += 5; }
-    else if (c0 == 3 && c1 >= 2){ htype = 4; chips += 40; mult += 4; }
-    else if (c0 == 3)           { htype = 3; chips += 30; mult += 3; }
-    else if (c0 == 2 && c1 == 2){ htype = 2; chips += 20; mult += 2; }
-    else if (c0 == 2)           { htype = 1; chips += 10; mult += 2; }
-    else                        { htype = 0; chips += 5;  mult += 1; }
-    if (flush && n >= 3) mult += (tals & TAL_PRISM) ? 4 : 2;
-    if (station_mod[station] == MOD_PAIR && c0 >= 2) chips += 10;
-    if (station_mod[station] == MOD_FLUSH && flush && n >= 3) mult++;
-    if (station_mod[station] == MOD_TRIO && c0 >= 3) chips += 20;
-    if (station_mod[station] == MOD_FULL && c0 >= 3 && c1 >= 2) chips += 25;
-
-    if (show) {
-        frect(0, 7, 20, 2, T_BLANK, P_UI);
-        print(0, 7, hand_names[htype], P_UI);
-        if (flush && n >= 3) print(str_len(hand_names[htype]) + 1, 7,
-                                   "FLUSH!", P_GOLD);
-        i = print_u16(0, 8, chips, P_UI);
-        put(i, 8, glyph('x'), P_UI);
-        i = print_u16(i + 1, 8, mult, P_UI);
-        print(i + 1, 8, "= +", P_GOLD);
-        print_u16(i + 4, 8, chips * mult, P_GOLD);
-    }
-    return chips * mult;
-}
-
-static void duel_preview(void)
-{
-    if (sel) score_selection(1);
-    else duel_msg("RAISE TO PREVIEW");
-}
-
-/* returns 1 = station won, 0 = lost */
-static uint8_t duel(void)
-{
-    uint8_t i, cur = 0, n;
-
-    /* build the duel deck from the whole pack */
-    for (i = 0; i < coll_n; i++) duel_deck[i] = coll[i];
-    dd_n = coll_n;
-    dis_n = 0;
-    if (dd_n > 1) shuffle(duel_deck, dd_n);
-
-    score = 0;
-    goal = station_goal[station];
-    plays = 3 + ((tals & TAL_WIND) ? 1 : 0);
-    swaps = 3;
-    sel = 0;
-
-    DISPLAY_OFF;
-    felt();
-    frect(0, 0, 20, 3, T_BLANK, P_UI);
-    frect(0, 7, 20, 2, T_BLANK, P_UI);
-    frect(0, 16, 20, 2, T_BLANK, P_UI);
-    print(0, 16, "A:RAISE B:LOWER", P_UI);
-    print(0, 17, "START:PLAY SEL:SWAP", P_UI);
-    for (i = 0; i < HANDN; i++) hand[i] = CARD_NONE;
-    duel_hud();
-    duel_msg("SHUFFLING...");
-    set_sprite_tile(0, S_ARROW_UP);
-    set_sprite_prop(0, 0);
-    move_cursor_to(0);
-    SHOW_SPRITES;
-    screen_open(pals_table);
-
-    /* deal */
-    for (i = 0; i < HANDN; i++) {
-        hand[i] = duel_draw();
-        draw_slot(i);
-        sfx_cursor();
-        delay_frames(5);
-    }
-    if (station == 0) duel_msg("MATCH SHAPES: PAIR");
-    else duel_msg(mod_descs[station_mod[station]]);
-    duel_hud();
-
+    uint8_t cur = 0, n;
     for (;;) {
-        n = tick();
-
-        if ((n & J_LEFT) && cur) {
-            cur--; move_cursor_to(cur); sfx_cursor();
+        uint8_t card = coll[cur];
+        DISPLAY_OFF;
+        felt();
+        window(0, 0, 20, 17);
+        print_center(1, "YOUR DECK", P_GOLD);
+        print(2, 3, "CARD", P_UI);
+        print_u16(7, 3, cur + 1, P_UI);
+        put(9, 3, glyph('/'), P_UI);
+        print_u16(10, 3, coll_n, P_UI);
+        draw_card(8, 5, card);
+        print_card_name(10, card, P_UI);
+        print_center(12, verb_names[C_VERB(card)], P_GOLD);
+        print(4, 14, "ATK", P_UI);
+        print_u16(8, 14, card_attack(card), P_UI);
+        print(10, 14, "HP", P_UI);
+        print_u16(13, 14, card_health(card), P_UI);
+        print_center(17, "L/R:CARD B:BACK", P_FELT);
+        screen_open(pals_table);
+        for (;;) {
+            n = tick();
+            if (n & (J_B | J_START)) { screen_close(); return; }
+            if ((n & J_LEFT) && cur) { --cur; break; }
+            if ((n & J_RIGHT) && cur + 1 < coll_n) { ++cur; break; }
         }
-        if ((n & J_RIGHT) && cur < HANDN - 1) {
-            cur++; move_cursor_to(cur); sfx_cursor();
-        }
-        if ((n & J_A) && hand[cur] != CARD_NONE && !(sel & (1 << cur))) {
-            sel |= 1 << cur;
-            draw_slot(cur);
-            print_card_name(15, hand[cur], P_FELT);
-            duel_preview();
-            sfx_pick();
-        }
-        if ((n & J_B) && (sel & (1 << cur))) {
-            sel &= ~(1 << cur);
-            draw_slot(cur);
-            frect(0, 15, 20, 1, T_DITH12, P_FELT);
-            duel_preview();
-            sfx_cursor();
-        }
-
-        if ((n & J_SELECT) && sel && swaps) {          /* swap cards */
-            swaps--;
-            for (i = 0; i < HANDN; i++) {
-                if (!(sel & (1 << i))) continue;
-                if (hand[i] != CARD_NONE) discards[dis_n++] = hand[i];
-                hand[i] = duel_draw();
-            }
-            sel = 0;
-            for (i = 0; i < HANDN; i++) draw_slot(i);
-            frect(0, 15, 20, 1, T_DITH12, P_FELT);
-            duel_preview();
-            duel_hud();
-            sfx_play();
-        }
-
-        if ((n & J_START) && sel && plays) {           /* play! */
-            uint16_t pts;
-            plays--;
-            /* show the played set on the table row */
-            frect(0, PLAY_Y, 20, 4, T_DITH12, P_FELT);
-            {
-                uint8_t px = 0;
-                for (i = 0; i < HANDN; i++) {
-                    if (!(sel & (1 << i))) continue;
-                    draw_card(SLOT_X(px), PLAY_Y, hand[i]);
-                    px++;
-                }
-            }
-            sfx_play();
-            pts = score_selection(1);
-            score += pts;
-            for (i = 0; i < HANDN; i++) {
-                if (!(sel & (1 << i))) continue;
-                if (hand[i] != CARD_NONE) discards[dis_n++] = hand[i];
-                hand[i] = duel_draw();
-            }
-            sel = 0;
-            for (i = 0; i < HANDN; i++) draw_slot(i);
-            frect(0, 15, 20, 1, T_DITH12, P_FELT);
-            duel_hud();
-            delay_frames(30);
-
-            if (score >= goal) {
-                duel_msg("STAGE CLEAR!");
-                sfx_win();
-                delay_frames(40);
-                screen_close();
-                return 1;
-            }
-            if (!plays) {
-                duel_msg("OUT OF PLAYS...");
-                sfx_lose();
-                delay_frames(50);
-                screen_close();
-                return 0;
-            }
-        }
+        sfx_cursor();
+        screen_close();
     }
 }
 
+#include "duel_ui.h"
+
 /* ------------------------------------------------------------------ */
-/*  Reward draft: pick one of three cards                              */
+/*  Reward: choose a card, then choose the card it replaces            */
 /* ------------------------------------------------------------------ */
 
-static const uint8_t pick3_x[3] = { 2, 8, 14 };
+static const uint8_t reward_x[3] = { 2, 8, 14 };
+
+static void reward_index(uint8_t index)
+{
+    uint8_t x;
+    frect(0, 13, 20, 1, T_DITH12, P_FELT);
+    print(6, 13, "CARD", P_UI);
+    x = print_u16(11, 13, index + 1, P_GOLD);
+    put(x, 13, glyph('/'), P_UI);
+    print_u16(x + 1, 13, coll_n, P_UI);
+}
 
 static void reward_screen(void)
 {
-    uint8_t c[3], cur = 0, i, n;
+    uint8_t choices[3], chosen, cur = 0, i, n;
 
-    /* One answer for the trail, one for a flush build, one raw scorer. */
-    c[0] = CARD(rnd(4), weighted_shape(), least_common_verb());
-    c[1] = CARD(strongest_color(), weighted_shape(), rnd(6));
-    c[2] = CARD(rnd(4), 2 + rnd(2), rnd(6));
+    choices[0] = card_reward((strongest_color() == COLOR_JADE ? 6 : 0) + rnd(6));
+    choices[1] = card_reward((strongest_color() == COLOR_JADE ? 0 : 6) + rnd(6));
+    do { choices[2] = random_card(); }
+        while (choices[2] == choices[0] || choices[2] == choices[1]);
 
     DISPLAY_OFF;
     felt();
     frect(0, 0, 20, 3, T_BLANK, P_UI);
     print_center(0, "STATION CLEAR!", P_GOLD);
-    print_center(2, "TAKE ONE CARD:", P_UI);
-    print(1, 4, "TRAIL", P_UI);
-    print(8, 4, "FLUSH", P_UI);
-    print(14, 4, "POWER", P_UI);
-    for (i = 0; i < 3; i++) draw_card(pick3_x[i] + 1, 6, c[i]);
-    frect(0, 12, 20, 1, T_BLANK, P_UI);
-    print_card_name(12, c[0], P_UI);
-    frect(0, 16, 20, 2, T_BLANK, P_UI);
-    print_center(16, "A:TAKE B:SKIP", P_UI);
+    print_center(2, "CHOOSE A REPLACEMENT", P_UI);
+    for (i = 0; i < 3; i++) draw_card(reward_x[i] + 1, 6, choices[i]);
+    print_card_name(12, choices[0], P_FELT);
+    print_center(14, verb_names[C_VERB(choices[0])], P_FELT);
+    print_center(16, "A:CHOOSE  B:SKIP", P_UI);
     set_sprite_tile(0, S_ARROW_UP);
     set_sprite_prop(0, 0);
-    move_sprite(0, (pick3_x[0] + 2) * 8 + 12, 10 * 8 + 16);
+    move_sprite(0, (reward_x[0] + 2) * 8 + 12, 10 * 8 + 16);
+    duel_frame(reward_x[0] + 1, 6);
     SHOW_SPRITES;
     screen_open(pals_table);
 
@@ -1154,204 +737,73 @@ static void reward_screen(void)
         n = tick();
         if ((n & J_LEFT) && cur) cur--;
         else if ((n & J_RIGHT) && cur < 2) cur++;
-        else if (n & J_A) {
-            if (!coll_add(c[cur])) {
-                print_card_name(12, c[cur], P_UI);
-                print_center(14, "PACK FULL!", P_UI);
-                sfx_bad();
-                delay_frames(40);
-            } else sfx_win();
-            break;
-        }
-        else if (n & J_B) { sfx_cursor(); break; }
-        else continue;
+        else if (n & J_A) break;
+        else if (n & J_B) {
+            sfx_cursor();
+            screen_close();
+            return;
+        } else continue;
         sfx_cursor();
-        move_sprite(0, (pick3_x[cur] + 2) * 8 + 12, 10 * 8 + 16);
-        frect(0, 12, 20, 1, T_BLANK, P_UI);
-        print_card_name(12, c[cur], P_UI);
+        move_sprite(0, (reward_x[cur] + 2) * 8 + 12, 10 * 8 + 16);
+        duel_frame(reward_x[cur] + 1, 6);
+        print_card_name(12, choices[cur], P_FELT);
+        frect(0, 14, 20, 1, T_DITH12, P_FELT);
+        print_center(14, verb_names[C_VERB(choices[cur])], P_FELT);
     }
+    chosen = choices[cur];
+    sfx_pick();
     screen_close();
-}
 
-/* ------------------------------------------------------------------ */
-/*  Trail encounters                                                   */
-/* ------------------------------------------------------------------ */
-
-static uint8_t match_list[MAXC], match_n;
-
-static void trail_prompt_verbs(uint8_t mask)
-{
-    uint8_t v, x, w = 0, first = 1;
-    for (v = 0; v < 6; v++)
-        if (mask & (1 << v)) {
-            if (!first) w += 4;             /* " OR " */
-            w += 1 + str_len(verb_names[v]);
-            first = 0;
-        }
-    x = (uint8_t)(20 - w) >> 1;
-    first = 1;
-    for (v = 0; v < 6; v++) {
-        if (!(mask & (1 << v))) continue;
-        if (!first) { print(x + 1, 3, "OR", P_UI); x += 4; }
-        put(x, 3, T_ICO_MOVE + v, P_UI);
-        print(x + 1, 3, verb_names[v], P_UI);
-        x += 1 + str_len(verb_names[v]);
-        first = 0;
-    }
-}
-
-static void trail_show_card(uint8_t idx)
-{
-    frect(6, 7, 8, 4, T_DITH12, P_FELT);
-    draw_card(8, 7, coll[match_list[idx]]);
-    print_card_name(12, coll[match_list[idx]], P_FELT);
-    frect(0, 13, 20, 1, T_DITH12, P_FELT);
-    if (match_n > 1) {
-        uint8_t x = print_u16(8, 13, idx + 1, P_FELT);
-        put(x, 13, glyph('/'), P_FELT);
-        print_u16(x + 1, 13, match_n, P_FELT);
-    }
-}
-
-static void msg_wait(const char *s)
-{
-    frect(0, 15, 20, 1, T_BLANK, P_UI);
-    print_center(15, s, P_UI);
-    frect(0, 16, 20, 2, T_BLANK, P_UI);
-    print_center(16, "A:OK", P_UI);
-    delay_frames(8);
-    wait_press(J_A | J_B | J_START);
-}
-
-/* one encounter; may change hearts/pack. */
-static void encounter(uint8_t e)
-{
-    uint8_t i, cur = 0, n, spent;
-
-    match_n = 0;
-    for (i = 0; i < coll_n; i++)
-        if (enc_verbs[e] & (1 << C_VERB(coll[i])))
-            match_list[match_n++] = i;
-
+    cur = 0;
     DISPLAY_OFF;
-    hide_sprites();
     felt();
-    window(0, 0, 20, 6);
-    print_center(1, enc_names[e], P_GOLD);
-    trail_prompt_verbs(enc_verbs[e]);
-    print_center(4, enc_hostile[e] ? "OR LOSE A HEART!" : "OR WALK ON BY.",
-                 P_UI);
-    frect(0, 15, 20, 1, T_BLANK, P_UI);
-    frect(0, 16, 20, 2, T_BLANK, P_UI);
-    if (match_n) {
-        print_center(16, "L/R:PICK A:USE", P_UI);
-        print_center(17, "B:REFUSE", P_UI);
-        trail_show_card(0);
-    } else {
-        print_center(9, "NO MATCHING CARD!", P_FELT);
-        print_center(17, "B:GO ON", P_UI);
-    }
+    frect(0, 0, 20, 3, T_BLANK, P_UI);
+    print_center(0, "REPLACE ONE CARD", P_GOLD);
+    print(2, 4, "NEW", P_UI);
+    print(13, 4, "OUT", P_UI);
+    draw_card(2, 6, chosen);
+    draw_card(14, 6, coll[0]);
+    print_card_name(12, coll[0], P_FELT);
+    reward_index(0);
+    print_center(16, "L/R:PICK A:REPLACE", P_UI);
+    print_center(17, "B:KEEP OLD DECK", P_UI);
+    set_sprite_tile(0, S_ARROW_UP);
+    move_sprite(0, (uint8_t)(15 * 8 + 12), (uint8_t)(10 * 8 + 16));
+    duel_frame(14, 6);
+    SHOW_SPRITES;
     screen_open(pals_table);
 
-    spent = 0;
     for (;;) {
         n = tick();
-        if (match_n) {
-            if ((n & J_LEFT) && cur) {
-                cur--; trail_show_card(cur); sfx_cursor();
-            }
-            if ((n & J_RIGHT) && cur < match_n - 1) {
-                cur++; trail_show_card(cur); sfx_cursor();
-            }
-            if (n & J_A) { spent = 1; break; }
-        }
-        if (n & J_B) break;
+        if ((n & J_LEFT) && cur) cur--;
+        else if ((n & J_RIGHT) && cur < coll_n - 1) cur++;
+        else if (n & J_A) {
+            coll[cur] = chosen;
+            sfx_win();
+            break;
+        } else if (n & J_B) {
+            sfx_cursor();
+            break;
+        } else continue;
+        sfx_cursor();
+        frect(14, 6, 3, 4, T_DITH12, P_FELT);
+        draw_card(14, 6, coll[cur]);
+        print_card_name(12, coll[cur], P_FELT);
+        reward_index(cur);
     }
-
-    if (spent) {
-        coll_remove(match_list[cur]);
-        sfx_play();
-        frect(0, 6, 20, 9, T_DITH12, P_FELT);
-        switch (e) {
-        case E_CACHE: {
-            uint8_t got = 0;
-            for (i = 0; i < 2; i++)
-                if (coll_add(random_card())) {
-                    draw_card(3 + got * 5, 7, coll[coll_n - 1]);
-                    got++;
-                }
-            msg_wait(got ? "YOU FOUND CARDS!" : "PACK FULL...");
-            break;
-        }
-        case E_SHRINE: {
-            uint8_t free_t = 0xFF;
-            for (i = 0; i < N_TALS; i++)
-                if (!(tals & (1 << i))) { free_t = i; break; }
-            /* pick a random unowned talisman */
-            if (free_t != 0xFF) {
-                do { i = rnd(N_TALS); } while (tals & (1 << i));
-                tals |= 1 << i;
-                if ((1 << i) == TAL_WOOL) { hearts_max++; hearts++; }
-                print_center(8, tal_names[i], P_FELT);
-                print_center(10, tal_descs[i], P_FELT);
-                sfx_win();
-                msg_wait("A TALISMAN!");
-            } else if (hearts < hearts_max) {
-                hearts++;
-                sfx_heart();
-                msg_wait("THE SHRINE HEALS YOU");
-            } else {
-                msg_wait("THE SHRINE IS QUIET.");
-            }
-            break;
-        }
-        case E_TRAVELER:
-            if (hearts < hearts_max) { hearts++; sfx_heart(); }
-            msg_wait("A WARM MEAL. +HEART");
-            break;
-        default:
-            msg_wait("YOU PRESS ON!");
-        }
-    } else if (enc_hostile[e]) {
-        hearts--;
-        sfx_hurt();
-        msg_wait("OUCH! -1 HEART");
-    } else {
-        msg_wait("YOU WALK ON.");
-    }
-    sfx_cursor();
     screen_close();
 }
-
-/* pick the encounters guarding station st */
-static void run_trail(uint8_t st)
-{
-    static const uint8_t hostile_pool[8] = {
-        E_CHASM, E_WOLF, E_GUARD, E_ICEFALL,
-        E_CHASM, E_WOLF, E_ICEFALL, E_TRAVELER,
-    };
-    uint8_t e0;
-
-    if (st == 0) return;                    /* a gentle first walk */
-    if (st == 2 || st == 5 || st == 8)      e0 = E_SHRINE;
-    else if (st == 1 || st == 4 || st == 7) e0 = E_CACHE;
-    else                                    e0 = hostile_pool[rnd(8)];
-    encounter(e0);
-    if (!hearts) return;
-    encounter(hostile_pool[rnd(8)]);
-}
-
 /* ------------------------------------------------------------------ */
 /*  Endings                                                            */
 /* ------------------------------------------------------------------ */
 
-/* wipe the logo/subtitle area back to banded sky */
+/* Wipe the title lettering while preserving the Antarctic panorama. */
 static void clear_sky(void)
 {
     uint8_t x, y;
-    for (y = 2; y < 9; y++)
+    for (y = 0; y < 7; y++)
         for (x = 0; x < 20; x++)
-            put(x, y, T_BLANK, sky_pal(y));
+            put(x, y, T_BLANK, TP_SKY0);
 }
 
 static void gameover_screen(void)
@@ -1359,8 +811,8 @@ static void gameover_screen(void)
     DISPLAY_OFF;
     draw_night_scene();
     clear_sky();
-    big_text("YOU FALL", 2, 4, TP_SKY1, DYN_BASE);
-    print_center(8, "THE MOUNTAIN WINS", TP_GOLD);
+    big_text("YOU FALL", 2, 2, TP_SKY0, DYN_BASE);
+    print_center(5, "THE MOUNTAIN WINS", TP_GOLD);
     print(2, 16, "YOU REACHED STN", TP_GND);
     print_u16(18, 16, station + 1, TP_GND);
     print_center(17, "PRESS START", TP_GND);
@@ -1377,10 +829,9 @@ static void summit_screen(void)
     DISPLAY_OFF;
     draw_night_scene();
     clear_sky();
-    big_text("THE SUMMIT", 0, 4, TP_SKY1, DYN_BASE);
-    print_center(8, "A TRUE CARD SAGE!", TP_GOLD);
-    print(3, 16, "CARDS KEPT:", TP_GND);
-    print_u16(15, 16, coll_n, TP_GND);
+    big_text("THE SUMMIT", 0, 2, TP_SKY0, DYN_BASE);
+    print_center(5, "A TRUE CARD SAGE!", TP_GOLD);
+    print_center(16, "THREE DUELS CLEARED", TP_GND);
     print_center(17, "PRESS START", TP_GND);
     screen_open(pals_title);
     sfx_win();
@@ -1389,9 +840,9 @@ static void summit_screen(void)
         t++;
         if (n & J_START) break;
         if ((t & 63) == 0)  { put(2, 1, T_STAR2, TP_SKY0);
-                              put(18, 4, T_STAR2, TP_SKY1); }
+                              put(18, 4, T_STAR2, TP_SKY0); }
         if ((t & 63) == 32) { put(2, 1, T_STAR1, TP_SKY0);
-                              put(18, 4, T_STAR1, TP_SKY1); }
+                              put(18, 4, T_STAR1, TP_SKY0); }
     }
     sfx_pick();
     screen_close();
@@ -1404,11 +855,10 @@ static void summit_screen(void)
 static void new_run(void)
 {
     uint8_t i;
-    for (i = 0; i < 20; i++) coll[i] = start_pack[i];
-    coll_n = 20;
+    for (i = 0; i < STARTER_SIZE; i++) coll[i] = starter_deck[i];
+    coll_n = STARTER_SIZE;
     station = 0;
     hearts = hearts_max = 3;
-    tals = 0;
 }
 
 static void play_run(void)
@@ -1419,14 +869,10 @@ static void play_run(void)
         if (n & J_SELECT) { help_screens(); continue; }
         if (n & J_START)  { pack_view(); continue; }
 
-        run_trail(station);
-        if (!hearts) { gameover_screen(); return; }
-        if (!coll_n) { gameover_screen(); return; }
-
-        if (duel()) {
-            reward_screen();
+        if (battle_duel()) {
             station++;
             if (station >= N_STATIONS) { summit_screen(); return; }
+            reward_screen();
         } else {
             hearts--;
             if (!hearts) { gameover_screen(); return; }
@@ -1443,7 +889,7 @@ void main(void)
     snd_init();
     set_bkg_data(0, BG_TILE_COUNT, bg_tiles);
     set_sprite_data(0, SPR_TILE_COUNT, spr_tiles);
-    set_sprite_palette(0, 2, pals_spr);
+    set_sprite_palette(0, 4, pals_spr);
     SPRITES_8x8;
     for (i = 0; i < 40; i++) move_sprite(i, 0, 0);
     /* wipe the map + attributes so no boot-logo tiles linger */

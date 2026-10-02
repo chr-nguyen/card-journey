@@ -1,76 +1,152 @@
-# CARD JOURNEY — a GBC card-collecting mountain climb
+# Card Journey — a three-lane GBC deck battler
 
-A complete Game Boy Color game written in C with
-[GBDK-2020](https://github.com/gbdk-2020/gbdk-2020). Climb a mountain of
-ten stations; win a card duel at every station to keep going.
+A Game Boy Color deck-building adventure written in C with GBDK-2020.
+The current prototype is a three-opponent mountain journey: build a deck,
+connect matching colors, and battle through three lanes.
 
-## The hook: every card is dual-use
+## Cards
 
-Each card in your pack has three traits:
+Each card has a **color**, **shape**, and **verb**. Shape determines combat
+stats; both colors can use every shape:
 
-| Trait | Values |
-|-------|--------|
-| Color | Ruby, Amber, Jade, Azure |
-| Shape (chip value) | Circle 2, Square 4, Triangle 6, Diamond 8 |
-| Action verb | MOVE, FIGHT, SNEAK, SPEAK, TAKE, GIVE |
+| Shape | Attack | Health |
+| --- | --- | --- |
+| Circle | 2 | 2 |
+| Square | 1 | 4 |
+| Triangle | 3 | 1 |
 
-* **On the trail** between stations, obstacles demand action verbs — a
-  chasm needs MOVE, a wolf needs FIGHT or SNEAK, a guard listens to
-  SPEAK. Spending a card gets you past, but it is **removed from your
-  pack for the rest of the run**. Refusing a hostile obstacle costs a
-  heart.
-* **At each station** you duel with that same pack, Balatro-style:
-  from a hand of five, raise a set of cards and play it. Sets of
-  matching *shapes* (pair, trio, full house, quad...) score
-  `chips x mult`; playing all one *color* is a flush for bonus mult;
-  FIGHT cards add chips and SPEAK cards add mult. Beat the station's
-  goal within 3 plays (3 swaps to redraw).
+Ruby cards have **FIGHT** or **TAKE**. Jade cards have **GIVE** or **TAKE**.
+Ruby specializes in removing enemies; Jade can heal damaged friendly cards.
+Both colors' cards still attack normally through their lanes.
 
-Every card burned to travel safely weakens the deck you must win with —
-that tension is the whole game.
+A verb activates once when you play the card. If a friendly card immediately
+beside its destination shares its color, the verb is stronger. Two matching
+neighbors still provide just one boost; the left and right edges do not connect.
 
-* Win a duel → draft one of three new cards.
-* Caches (spend TAKE) grant two random cards.
-* Shrines (sacrifice a GIVE card) grant one of six permanent
-  **talismans**: Ember Fang, Echo Bell, Prism Eye, Fourth Wind,
-  Wool Charm, Lodestone.
-* Travelers (spend SPEAK) restore a heart.
-* Lose all hearts — or all cards — and the mountain wins.
+| Verb | Normal | Connected |
+| --- | --- | --- |
+| FIGHT | Deal 1 damage to an enemy card | Deal 2 |
+| GIVE | Heal another friendly card by 1 | Heal by 2 |
+| TAKE | Draw 1 card | Draw 2 |
+
+Healing stops at a card's maximum health. FIGHT cannot damage the opponent
+directly. A card can be deployed without a verb target, but that ability then
+has no effect. A star in the placement preview identifies a color connection.
+
+## Battle loop
+
+Both sides start at 12 health. Enemy cards occupy the top three slots; your
+cards occupy the middle three slots, with your hand below. The numbers under
+each board card are **attack / current health**. Inspection explains each card.
+
+1. Start with five cards. On later turns, draw up to five total: five fresh
+   cards, or one card saved from your last turn plus four draws. If the deck and
+   discard pile cannot supply them, draw as many as possible.
+2. Play up to two cards. The player starts first and gets **one play on the
+   opening turn**. Choose a card, its lane, and any ability target.
+3. Press START to end your turn. If plays remain, confirm that you want to stop.
+   Then choose one unused card to **keep for your next turn**, or choose none.
+   All other unused cards go to your discard pile. Keeping costs no play.
+4. Your cards attack their opposing lanes from left to right. An empty enemy
+   lane lets damage reach the opponent. The opponent takes its turn using the
+   same play, keep, and drawing rules.
+
+Cards stay on the board, and damage persists. Newly deployed cards attack that
+turn; defenders attack on their own turn and do not retaliate. Excess damage
+to a defeated card does not spill over to opponent health. Reduce the opponent
+to zero health to win.
+
+You can replace one of your board cards with a new one; the old card goes to
+your discard pile. Defeated cards also enter their owner's discard pile. When
+the draw pile runs out, reshuffle the discard pile. Cards in hand or on the board
+remain outside that shuffle. TAKE can grow your hand to seven cards; the visible
+five-card window scrolls as you select cards.
+
+The Antarctic GBC setting uses fractured ice, enormous elder ruins, and a hooded
+expedition explorer. Title and map scenery draw on Mountains of Madness imagery.
+The original hooded-spirit, armored-sentinel, and gargoyle card portraits remain;
+shape seals are at the top and verb badges at the bottom. The enemy board has a
+violet ENEMY band and downward markers; yours has a sea-green YOUR band and upward
+markers. Card affinity colors stay identical on both sides. A full bright outline
+marks the selected card, lane, or target, including reward choices. A small hand
+arrow keeps track of the source card during placement and targeting; prompts name
+enemy and ally targets explicitly. Gold links mark matching neighbors, and the
+HUD's action pips show remaining plays. See [the art direction and asset notes](ART_DIRECTION.md).
+
+## Building your deck
+
+Begin with ten cards and keep a **ten-card expedition deck** throughout the
+run. After each of the first two wins, choose one of three offered cards, then
+choose one card in your deck to replace; or skip the reward. Each offer has a
+card in your most common color, a card in the other color, and a third distinct
+option. A replacement changes future battles without diluting your draws.
+The keep choice during battle affects only that duel, not the expedition deck.
+
+The three opponents favor attacks, durable support, and color connections.
+Battle health resets for every duel. The three hearts on the mountain map are
+**retry lives**: losing a duel costs a life and retries the same station. Cards
+defeated in battle remain in your permanent deck. Clear all three opponents to
+reach the summit; lose all three lives to end the run.
 
 ## Controls
 
-| Screen | Keys |
-|--------|------|
-| Map    | A climb, SELECT help, START pack view |
-| Duel   | LEFT/RIGHT cursor, A raise, B lower, START play set, SELECT swap raised cards |
-| Trail  | LEFT/RIGHT browse matching cards, A spend card, B refuse |
+| Screen / phase | Controls |
+| --- | --- |
+| Map | A battle, SELECT rules, START deck |
+| Hand | LEFT/RIGHT select, A choose, START end turn, SELECT inspect |
+| Placement | LEFT/RIGHT lane, A confirm / choose target, B cancel |
+| Ability target | LEFT/RIGHT target, A commit, B return to placement |
+| End-turn prompt | A continue to the keep choice, B cancel |
+| Keep choice | LEFT/RIGHT select a hand card; A keep it and attack, START keep none and attack, B cancel |
+| Inspection | UP/DOWN hand / friendly board / enemy board; LEFT/RIGHT card; B or SELECT back |
+| Reward | LEFT/RIGHT offer, A choose, B skip; then LEFT/RIGHT deck card, A replace, B keep old deck |
+| Deck | LEFT/RIGHT card, B or START back |
 
-## Building
+Choosing a placement or target is a preview; backing out consumes no card or
+play. START asks for confirmation while unused plays remain. The keep choice
+happens before attacks; if the duel ends on that attack, nothing carries into
+the next duel.
 
-Needs GBDK-2020 (default path `~/gbdk`, override with
-`make GBDK_HOME=/path/to/gbdk/`) and Python 3.
+## Building and verification
+
+Needs GBDK-2020 (default path `~/gbdk`; override with
+`make GBDK_HOME=/path/to/gbdk/`). Asset regeneration needs Python 3.
 
 ```sh
-make            # -> card-journey.gbc
-make assets     # regenerate src/assets.c|h from tools/gen_assets.py
-```
-
-The ROM is a 32 KB GBC-exclusive cartridge; it runs in mGBA, SameBoy,
-BGB, or on real hardware via a flash cart:
-
-```sh
+make           # card-journey.gbc, 32 KB GBC-exclusive ROM
+make test      # host C compiler: rules, card conservation, AI, seeded battles
+make assets    # regenerate src/assets.c and src/assets.h
 mgba card-journey.gbc
 ```
 
-## How it's put together
+Optional headless verification requires PyBoy installed for the selected Python:
 
-* `src/main.c` — the whole game: state machines for title, map, trail,
-  duel, reward, endings; CGB palette fades; runtime 2x font scaling for
-  the big title letters; channel-1/4 sound effects via direct register
-  writes.
-* `tools/gen_assets.py` — every tile (font, card frames, shape glyphs,
-  verb icons, mountain scenery, UI borders, sprites) is drawn as ASCII
-  art in this script and compiled to native 2bpp tile data in
-  `src/assets.c|h` (generated, committed).
-* Cards pack into a single byte (`ccss0vvv`), the whole collection is
-  40 bytes, and the ROM uses only bank 0 of a 32 KB cart.
+```sh
+make emulator-test PYBOY_PYTHON=/path/to/python-with-pyboy
+```
+
+The emulator test uses normal buttons, reads RAM for assertions, compares moves
+with the host rules engine, and writes screenshots to `/tmp/card-journey-*.png`.
+It exercises a complete run, placement/target cancellation, inspection, retries,
+and card replacement and retention. Frame-by-frame selection checks detect board/card flicker
+and accidental LCD blanking. The script also accepts `--lose-run` and
+`--skip-first-reward` to exercise the loss ending and reward skipping.
+
+## Source layout and prototype limits
+
+- `src/cards.c|h`: packed definitions, shape stats, starter and opponent decks.
+- `src/battle.c|h`: bounded battle state, deck circulation, legal plays, verbs,
+  connections, combat, and victory detection; independent of Game Boy hardware.
+- `src/ai.c|h`: opponent decisions based on its hand and the public board.
+- `src/duel_ui.h`: battle presentation and input, included by `main.c` after the
+  shared rendering helpers.
+- `src/main.c`: title, mountain, deck view, rewards, endings, palettes, and audio.
+- `tools/gen_assets.py`: source of generated native 2bpp tiles and explorer frames.
+- `tools/scenes.py`: original Antarctic panoramas, deduplicated for CGB VRAM bank 1.
+- `tests/`: deterministic rules tests and emulator smoke driver.
+
+This is the first playable prototype. Full ten-station progression, camps,
+permanent upgrades, more colors/shapes/verbs, and saving are pending. Retention,
+color roles, rewards, and match balance still need human playtesting. See the
+[mechanics research and playtest criteria](MECHANICS_RESEARCH.md) and the
+[original implementation plan](../IMPLEMENTATION_PLAN.md).
